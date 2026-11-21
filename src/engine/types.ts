@@ -125,18 +125,29 @@ export interface EqBand {
   freqHz: number;
   gainDb: number;
   q: number;
+  dynamicEnabled?: boolean;
+  dynamicThresholdDb?: number;
+  dynamicRatio?: number;
 }
 
 export interface DynamicsConfig {
   gateEnabled: boolean;
   gateThresholdDb: number;
   gateRangeDb: number;
+  gateAttackMs?: number;
+  gateHoldMs?: number;
+  gateReleaseMs?: number;
   compEnabled: boolean;
   compThresholdDb: number;
   compRatio: number;
   compAttackMs: number;
   compReleaseMs: number;
   compMakeupDb: number;
+  sidechainHpfHz?: number;
+  parallelMixPct?: number;
+  deEsserEnabled?: boolean;
+  deEsserFreqHz?: number;
+  deEsserThresholdDb?: number;
   limiterEnabled: boolean;
   limiterCeilingDb: number;
 }
@@ -174,6 +185,7 @@ export interface ChannelStrip {
   pan: number; // -100 to +100
   faderDb: number; // -75 to +10
   mute: boolean;
+  muteSafe?: boolean;
   solo: boolean;
   dcaGroup: 'A' | 'B' | 'C' | 'D' | null;
   muteGroup: 1 | 2 | 3 | 4 | null;
@@ -382,6 +394,10 @@ export interface MeterReading {
   signalPresent: boolean;
   source: MeasurementSource;
   graphVersion: number;
+  lufsMomentary?: number;
+  lufsShortTerm?: number;
+  lufsIntegrated?: number;
+  truePeakDbtp?: number;
 }
 
 export interface GraphTraceStage {
@@ -405,3 +421,149 @@ export interface GraphTraceResult {
   downstream: GraphTraceStage[];
   warnings: string[];
 }
+
+export type AutomationParameterKey =
+  | 'faderDb'
+  | 'pan'
+  | 'softwareTrimDb'
+  | 'mute'
+  | 'hpfFreqHz'
+  | 'sendMon1'
+  | 'sendStream';
+
+export type AutomationMode = 'off' | 'read' | 'touch' | 'write';
+
+export interface AutomationKeyframe {
+  id: string;
+  timeSec: number;
+  value: number;
+}
+
+export interface AutomationLane {
+  id: string;
+  channelId: string;
+  parameter: AutomationParameterKey;
+  enabled: boolean;
+  points: AutomationKeyframe[];
+}
+
+export interface AutomationTransportState {
+  playing: boolean;
+  recording: boolean;
+  mode: AutomationMode;
+  playheadSec: number;
+  durationSec: number;
+  loop: boolean;
+}
+
+export type RecordingTargetId = 'system-master' | string;
+
+export interface RecordedTake {
+  id: string;
+  targetId: string;
+  targetLabel: string;
+  filename: string;
+  blobUrl: string;
+  mimeType: string;
+  durationSec: number;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export type MultitrackTapPoint = 'pre-dsp' | 'post-fader';
+export type WavBitDepth = 16 | 24;
+
+export interface MultitrackWaveformSlice {
+  timeSec: number;
+  peak: number;
+  clipped: boolean;
+}
+
+export interface MultitrackRecordedFile {
+  channelId: string;
+  channelNumber: number;
+  channelName: string;
+  shortName: string;
+  filename: string;
+  blobUrl: string;
+  sizeBytes: number;
+  durationSec: number;
+  sampleRateHz: number;
+  bitDepth: WavBitDepth;
+  peakDbfs: number;
+  waveform: MultitrackWaveformSlice[];
+}
+
+export interface MultitrackSession {
+  id: string;
+  createdAt: string;
+  tapPoint: MultitrackTapPoint;
+  bitDepth: WavBitDepth;
+  sampleRateHz: number;
+  durationSec: number;
+  tracks: MultitrackRecordedFile[];
+}
+
+export type DcaGroupId = 'A' | 'B' | 'C' | 'D';
+
+export interface DcaGroupState {
+  id: DcaGroupId;
+  label: string;
+  faderDb: number;
+  mute: boolean;
+}
+
+export type SoloMode = 'pfl' | 'afl' | 'sip';
+
+export type OperatorRole = 'volunteer' | 'foh' | 'system-tech';
+
+export type FxEffectType = 'hall-reverb' | 'plate-reverb' | 'tap-delay' | 'vocal-chorus';
+
+export interface FxSlotState {
+  id: string;
+  slotNumber: 1 | 2 | 3 | 4;
+  name: string;
+  type: FxEffectType;
+  enabled: boolean;
+  bypass: boolean;
+  inputBusId: string;
+  returnGainDb: number;
+  decaySec: number;
+  preDelayMs: number;
+  dampingHz: number;
+  delayTimeMs: number;
+  bpm: number;
+  subdivision: '1/4' | '1/8' | 'dotted-1/8';
+  feedbackPct: number;
+  chorusRateHz: number;
+  chorusDepthPct: number;
+}
+
+export interface MatrixZone {
+  id: string;
+  name: string;
+  shortName: string;
+  physicalOut: string;
+  delayMs: number;
+  masterGainDb: number;
+  mute: boolean;
+  sourceGains: Record<string, number>;
+}
+
+export interface BroadcastLoudnessMetrics {
+  momentaryLufs: number;
+  shortTermLufs: number;
+  integratedLufs: number;
+  truePeakDbtp: number;
+  loudnessRangeLu: number;
+}
+
+export interface VirtualSoundcheckTrack {
+  id: string;
+  channelId: string;
+  channelNumber: number;
+  filename: string;
+  blobUrl: string;
+  durationSec: number;
+}
+

@@ -271,6 +271,32 @@
     --subnav-tab-active-text: #ffffff;
   }
 
+  :root[data-high-vis="true"] {
+    --console-bg: #020407;
+    --console-bar: #05080f;
+    --console-subbar: #03060b;
+    --console-chassis-top: #1a2232;
+    --console-chassis-bot: #0d121c;
+    --console-panel-top: #151c29;
+    --console-panel-bot: #0a0e16;
+    --console-border: rgba(248, 250, 252, 0.34);
+    --console-accent: #fbbf24;
+    --console-accent-border: rgba(251, 191, 36, 0.9);
+    --console-accent-text: #fef08a;
+    --color-slate-300: #f1f5f9;
+    --color-slate-400: #cbd5e1;
+    --color-slate-500: #94a3b8;
+  }
+
+  :root[data-high-vis="true"][data-console-theme="daylight-studio"] {
+    --console-bg: #ffffff;
+    --console-bar: #ffffff;
+    --console-subbar: #f1f5f9;
+    --console-border: rgba(15, 23, 42, 0.48);
+    --color-slate-400: #1e293b;
+    --color-slate-500: #334155;
+  }
+
   body {
     font-family: var(--font-sans);
     background-color: var(--console-bg);

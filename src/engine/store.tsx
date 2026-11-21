@@ -5,7 +5,10 @@ import {
   HARDWARE_PROFILES,
   INITIAL_BUSES,
   INITIAL_CHANNELS,
+  INITIAL_DCA_GROUPS,
   INITIAL_FEEDBACK,
+  INITIAL_FX_RACK,
+  INITIAL_MATRIX_ZONES,
   INITIAL_SCENES,
   INITIAL_SOUND_CHECK,
   INITIAL_SPEAKERS,
@@ -17,28 +20,46 @@ import type {
   AiProposal,
   AudioDevice,
   AudioSourceBinding,
+  AutomationKeyframe,
+  AutomationLane,
+  AutomationMode,
+  AutomationParameterKey,
+  AutomationTransportState,
+  BroadcastLoudnessMetrics,
   BusNode,
   ChannelSendConfig,
   ChannelStrip,
   ConsoleSnapshotProfile,
   ConsoleThemeId,
+  DcaGroupId,
+  DcaGroupState,
   DetectedHardwareDevice,
   EqBand,
   FeedbackIncident,
+  FxSlotState,
   GraphTraceResult,
   GraphTraceStage,
   HardwareProfile,
   HardwareProfileId,
   MainDestinationId,
+  MatrixZone,
   MeterReading,
+  MultitrackSession,
+  MultitrackTapPoint,
   OperatingMode,
+  OperatorRole,
+  RecordedTake,
+  RecordingTargetId,
   SceneProfile,
   SnapshotRestoreScope,
+  SoloMode,
   SoundCheckItem,
   SpeakerBand,
   StructuredEvent,
   VirtualCableNode,
   VirtualDiState,
+  VirtualSoundcheckTrack,
+  WavBitDepth,
   WorkspaceId,
 } from './types';
 import { audioEngine } from './webAudioEngine';
@@ -119,12 +140,52 @@ interface AudioConsoleContextValue {
   resetXruns: () => void;
   resetPeakHold: (nodeId?: string) => void;
 
-  // Real Broadcast / Stream Recorder
+  // Real Whole-System & Broadcast Bus Recorder
   recordingActive: boolean;
   recordingDurationSec: number;
+  recordingTargetId: RecordingTargetId;
+  setRecordingTargetId: (targetId: RecordingTargetId) => void;
+  recordedTakes: RecordedTake[];
+  deleteRecordedTake: (takeId: string) => void;
   lastRecordingUrl: string | null;
   lastRecordingFilename: string | null;
-  toggleStreamRecording: (busId?: string) => Promise<{ ok: boolean; error?: string }>;
+  toggleStreamRecording: (targetId?: string) => Promise<{ ok: boolean; error?: string }>;
+
+  // Real Multitrack Simultaneous Channel WAV Recorder
+  multitrackArmedIds: string[];
+  multitrackTapPoint: MultitrackTapPoint;
+  setMultitrackTapPoint: (tap: MultitrackTapPoint) => void;
+  multitrackBitDepth: WavBitDepth;
+  setMultitrackBitDepth: (depth: WavBitDepth) => void;
+  multitrackRecording: boolean;
+  multitrackSessions: MultitrackSession[];
+  toggleMultitrackArm: (channelId: string) => void;
+  armMultitrackPreset: (preset: 'all' | 'active' | 'none') => void;
+  toggleMultitrackRecording: () => Promise<{ ok: boolean; error?: string }>;
+  deleteMultitrackSession: (sessionId: string) => void;
+
+  // Parameter Automation Engine
+  automationLanes: AutomationLane[];
+  automationTransport: AutomationTransportState;
+  toggleAutomationPlay: () => void;
+  stopAndRewindAutomation: () => void;
+  setAutomationPlayhead: (sec: number) => void;
+  setAutomationMode: (mode: AutomationMode) => void;
+  toggleAutomationRecord: () => void;
+  setAutomationDuration: (durationSec: number) => void;
+  toggleAutomationLoop: () => void;
+  ensureAutomationLane: (channelId: string, parameter: AutomationParameterKey) => AutomationLane;
+  toggleAutomationLaneEnabled: (laneId: string) => void;
+  removeAutomationLane: (laneId: string) => void;
+  clearAutomationLanePoints: (laneId: string) => void;
+  upsertAutomationPoint: (
+    laneId: string,
+    timeSec: number,
+    value: number,
+    replacePointId?: string
+  ) => void;
+  removeAutomationPoint: (laneId: string, pointId: string) => void;
+  captureAutomationSnapshotPoint: (channelId: string, parameter: AutomationParameterKey) => void;
 
   // Multi-Source Patching & Built-In Virtual Audio Cables
   virtualCables: VirtualCableNode[];
@@ -233,9 +294,134 @@ interface AudioConsoleContextValue {
   redo: () => void;
   traceSignalJourney: (nodeId: string, direction?: 'forward' | 'reverse' | 'both') => GraphTraceResult;
   logEvent: (evt: Omit<StructuredEvent, 'id' | 'timestamp' | 'graphVersion'>) => void;
+
+  // Audit 2026: Multi-Seat WebSocket, RBAC, High-Vis, Web MIDI, DCA Spill, Solo Modes, FX Rack, Matrix, LUFS & Virtual Soundcheck
+  connectedSeats: number;
+  wsConnected: boolean;
+  operatorRole: OperatorRole;
+  setOperatorRole: (role: OperatorRole) => void;
+  highVisibilityMode: boolean;
+  setHighVisibilityMode: (v: boolean) => void;
+  midiConnectedDevices: string[];
+  midiLastMessage: string | null;
+  dcaGroups: DcaGroupState[];
+  updateDcaGroup: (id: DcaGroupId, patch: Partial<DcaGroupState>) => void;
+  activeDcaSpill: DcaGroupId | null;
+  setActiveDcaSpill: (id: DcaGroupId | null) => void;
+  soloMode: SoloMode;
+  setSoloMode: (mode: SoloMode) => void;
+  fxRack: FxSlotState[];
+  updateFxSlot: (slotId: string, patch: Partial<FxSlotState>) => void;
+  matrixZones: MatrixZone[];
+  updateMatrixZone: (zoneId: string, patch: Partial<MatrixZone>) => void;
+  updateMatrixZoneSource: (zoneId: string, busId: string, gainDb: number) => void;
+  broadcastLoudness: BroadcastLoudnessMetrics;
+  virtualSoundcheckStatus: {
+    loadedCount: number;
+    playing: boolean;
+    loop: boolean;
+    positionSec: number;
+    durationSec: number;
+  };
+  loadVirtualSoundcheckFiles: (
+    assignments: { channelId: string; file: File }[]
+  ) => Promise<{ ok: boolean; loadedCount: number; durationSec: number; error?: string }>;
+  mountMultitrackSessionForSoundcheck: (
+    sessionId: string
+  ) => Promise<{ ok: boolean; loadedCount: number; durationSec: number; error?: string }>;
+  toggleVirtualSoundcheckPlay: () => void;
+  stopVirtualSoundcheck: () => void;
+  setVirtualSoundcheckLoop: (loop: boolean) => void;
 }
 
 const LOCAL_SNAPSHOTS_STORAGE_KEY = 'church_console_snapshots_v1';
+const LOCAL_AUTOMATION_STORAGE_KEY = 'church_console_automation_v1';
+const LOCAL_ROLE_STORAGE_KEY = 'church_console_operator_role_v1';
+const LOCAL_HIGH_VIS_STORAGE_KEY = 'church_console_high_vis_v1';
+
+export const AUTOMATION_PARAM_META: Record<
+  AutomationParameterKey,
+  { label: string; shortLabel: string; unit: string; min: number; max: number; step: number; color: string }
+> = {
+  faderDb: { label: 'Channel Fader', shortLabel: 'FADER', unit: 'dB', min: -60, max: 10, step: 0.5, color: '#f59e0b' },
+  pan: { label: 'Stereo Pan', shortLabel: 'PAN', unit: '', min: -100, max: 100, step: 2, color: '#10b981' },
+  softwareTrimDb: { label: 'Digital Trim', shortLabel: 'TRIM', unit: 'dB', min: -18, max: 18, step: 0.5, color: '#38bdf8' },
+  mute: { label: 'Channel Mute', shortLabel: 'MUTE', unit: '', min: 0, max: 1, step: 1, color: '#f43f5e' },
+  hpfFreqHz: { label: 'HPF Cutoff', shortLabel: 'HPF', unit: 'Hz', min: 25, max: 300, step: 5, color: '#a78bfa' },
+  sendMon1: { label: 'Monitor 1 Send', shortLabel: 'MON1', unit: 'dB', min: -60, max: 10, step: 0.5, color: '#22d3ee' },
+  sendStream: { label: 'Stream Send', shortLabel: 'STRM', unit: 'dB', min: -60, max: 10, step: 0.5, color: '#34d399' },
+};
+
+function clampAutomationValue(param: AutomationParameterKey, value: number): number {
+  const b = AUTOMATION_PARAM_META[param];
+  const clamped = Math.max(b.min, Math.min(b.max, value));
+  if (param === 'mute') return clamped >= 0.5 ? 1 : 0;
+  return Math.round(clamped / b.step) * b.step;
+}
+
+function readChannelAutomationParam(ch: ChannelStrip, param: AutomationParameterKey): number {
+  switch (param) {
+    case 'faderDb':
+      return ch.faderDb;
+    case 'pan':
+      return ch.pan;
+    case 'softwareTrimDb':
+      return ch.softwareTrimDb;
+    case 'mute':
+      return ch.mute ? 1 : 0;
+    case 'hpfFreqHz':
+      return ch.hpfFreqHz;
+    case 'sendMon1':
+      return ch.sends.mon1?.levelDb ?? -12;
+    case 'sendStream':
+      return ch.sends.livestream?.levelDb ?? -6;
+  }
+}
+
+export function evaluateAutomationLaneAt(lane: AutomationLane, timeSec: number): number | null {
+  if (lane.points.length === 0) return null;
+  const pts = lane.points;
+  if (timeSec <= pts[0].timeSec) return pts[0].value;
+  if (timeSec >= pts[pts.length - 1].timeSec) return pts[pts.length - 1].value;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (timeSec >= a.timeSec && timeSec <= b.timeSec) {
+      if (lane.parameter === 'mute') return a.value;
+      const span = b.timeSec - a.timeSec;
+      if (span <= 0.0001) return b.value;
+      const t = (timeSec - a.timeSec) / span;
+      return a.value + (b.value - a.value) * t;
+    }
+  }
+  return pts[pts.length - 1].value;
+}
+
+function loadLocalAutomation(): { lanes: AutomationLane[]; durationSec: number } {
+  if (typeof window === 'undefined') return { lanes: [], durationSec: 60 };
+  try {
+    const raw = window.localStorage.getItem(LOCAL_AUTOMATION_STORAGE_KEY);
+    if (!raw) return { lanes: [], durationSec: 60 };
+    const parsed = JSON.parse(raw) as { lanes?: unknown; durationSec?: unknown };
+    const lanes = Array.isArray(parsed.lanes)
+      ? parsed.lanes.filter(
+          (l): l is AutomationLane =>
+            Boolean(l) &&
+            typeof l.id === 'string' &&
+            typeof l.channelId === 'string' &&
+            typeof l.parameter === 'string' &&
+            Array.isArray(l.points)
+        )
+      : [];
+    const durationSec =
+      typeof parsed.durationSec === 'number' && parsed.durationSec >= 10 && parsed.durationSec <= 600
+        ? parsed.durationSec
+        : 60;
+    return { lanes, durationSec };
+  } catch {
+    return { lanes: [], durationSec: 60 };
+  }
+}
 
 function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -430,8 +616,29 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const [recordingActive, setRecordingActive] = useState<boolean>(false);
   const [recordingDurationSec, setRecordingDurationSec] = useState<number>(0);
+  const [recordingTargetId, setRecordingTargetId] = useState<RecordingTargetId>('system-master');
+  const [recordedTakes, setRecordedTakes] = useState<RecordedTake[]>([]);
   const [lastRecordingUrl, setLastRecordingUrl] = useState<string | null>(null);
   const [lastRecordingFilename, setLastRecordingFilename] = useState<string | null>(null);
+
+  const [multitrackArmedIds, setMultitrackArmedIds] = useState<string[]>(() =>
+    INITIAL_CHANNELS.slice(0, 4).map((c) => c.id)
+  );
+  const [multitrackTapPoint, setMultitrackTapPoint] = useState<MultitrackTapPoint>('pre-dsp');
+  const [multitrackBitDepth, setMultitrackBitDepth] = useState<WavBitDepth>(24);
+  const [multitrackRecording, setMultitrackRecording] = useState<boolean>(false);
+  const [multitrackSessions, setMultitrackSessions] = useState<MultitrackSession[]>([]);
+
+  const initialAuto = useMemo(() => loadLocalAutomation(), []);
+  const [automationLanes, setAutomationLanes] = useState<AutomationLane[]>(initialAuto.lanes);
+  const [automationTransport, setAutomationTransport] = useState<AutomationTransportState>({
+    playing: false,
+    recording: false,
+    mode: 'read',
+    playheadSec: 0,
+    durationSec: initialAuto.durationSec,
+    loop: true,
+  });
 
   const [testToneActive, setTestToneActive] = useState<boolean>(false);
   const [testToneKind, setTestToneKind] = useState<'pink' | 'sine1k' | 'sweep'>('pink');
@@ -458,6 +665,55 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const [systemIntelligence, setSystemIntelligence] = useState<SystemIntelligenceSummary>(() =>
     createEmptySystemIntelligence()
   );
+
+  // Audit 2026 States
+  const [connectedSeats, setConnectedSeats] = useState<number>(1);
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [operatorRole, setOperatorRoleState] = useState<OperatorRole>(() => {
+    if (typeof window === 'undefined') return 'foh';
+    const saved = window.localStorage.getItem(LOCAL_ROLE_STORAGE_KEY);
+    return saved === 'volunteer' || saved === 'foh' || saved === 'system-tech' ? saved : 'foh';
+  });
+  const [highVisibilityMode, setHighVisibilityModeState] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(LOCAL_HIGH_VIS_STORAGE_KEY) === 'true';
+  });
+  const [midiConnectedDevices, setMidiConnectedDevices] = useState<string[]>([]);
+  const [midiLastMessage, setMidiLastMessage] = useState<string | null>(null);
+  const [dcaGroups, setDcaGroups] = useState<DcaGroupState[]>(INITIAL_DCA_GROUPS);
+  const [activeDcaSpill, setActiveDcaSpill] = useState<DcaGroupId | null>(null);
+  const [soloMode, setSoloMode] = useState<SoloMode>('afl');
+  const [fxRack, setFxRack] = useState<FxSlotState[]>(INITIAL_FX_RACK);
+  const [matrixZones, setMatrixZones] = useState<MatrixZone[]>(INITIAL_MATRIX_ZONES);
+  const [broadcastLoudness, setBroadcastLoudness] = useState<BroadcastLoudnessMetrics>({
+    momentaryLufs: -80,
+    shortTermLufs: -80,
+    integratedLufs: -80,
+    truePeakDbtp: -80,
+    loudnessRangeLu: 0,
+  });
+  const [virtualSoundcheckStatus, setVirtualSoundcheckStatus] = useState<{
+    loadedCount: number;
+    playing: boolean;
+    loop: boolean;
+    positionSec: number;
+    durationSec: number;
+  }>({
+    loadedCount: 0,
+    playing: false,
+    loop: true,
+    positionSec: 0,
+    durationSec: 0,
+  });
+
+  const clientIdRef = useRef<string>(
+    `seat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+  );
+  const revisionIdRef = useRef<number>(1);
+  const isRemoteUpdateRef = useRef<boolean>(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const channelPatchTimersRef = useRef<Map<string, number>>(new Map());
+  const busPatchTimersRef = useRef<Map<string, number>>(new Map());
 
   const hardwareProfile = useMemo(() => {
     if (profileId === 'auto-detected') {
@@ -492,6 +748,13 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     intelligenceConfig,
     systemIntelligence,
     globalDspBypass,
+    automationLanes,
+    automationTransport,
+    dcaGroups,
+    fxRack,
+    matrixZones,
+    soloMode,
+    operatorRole,
   });
   stateRef.current = {
     profileId,
@@ -507,8 +770,16 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     intelligenceConfig,
     systemIntelligence,
     globalDspBypass,
+    automationLanes,
+    automationTransport,
+    dcaGroups,
+    fxRack,
+    matrixZones,
+    soloMode,
+    operatorRole,
   };
 
+  const lastTouchAtRef = useRef<Map<string, number>>(new Map());
   const feedbackRingTrackerRef = useRef<{ freqHz: number; count: number; lastSeenMs: number } | null>(null);
 
   const logEvent = useCallback(
@@ -541,7 +812,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         setDetectedHardware(detected);
         void fetch('/api/console/hardware/sync', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Operator-Role': stateRef.current.operatorRole,
+          },
           body: JSON.stringify({ devices: detected }),
         }).catch(() => {});
         return detected;
@@ -567,6 +841,8 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         if (res.ok) {
           const data = await res.json();
           if (!cancelled) {
+            isRemoteUpdateRef.current = true;
+            if (typeof data.revisionId === 'number') revisionIdRef.current = data.revisionId;
             if (data.profileId) setProfileId(data.profileId);
             if (data.workspaceTheme) setWorkspaceTheme(data.workspaceTheme);
             if (data.activeSceneId) setActiveSceneId(data.activeSceneId);
@@ -578,6 +854,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
               setVirtualCables(data.virtualCables);
             }
             if (data.virtualDi) setVirtualDi(data.virtualDi);
+            if (Array.isArray(data.dcaGroups) && data.dcaGroups.length > 0) {
+              setDcaGroups(data.dcaGroups);
+            }
+            if (Array.isArray(data.fxRack) && data.fxRack.length > 0) {
+              setFxRack(data.fxRack);
+            }
+            if (Array.isArray(data.matrixZones) && data.matrixZones.length > 0) {
+              setMatrixZones(data.matrixZones);
+            }
             if (Array.isArray(data.proposals)) setProposals(data.proposals);
             if (Array.isArray(data.scenes)) setScenes(data.scenes);
             if (Array.isArray(data.snapshots)) {
@@ -587,7 +872,19 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
             if (Array.isArray(data.feedbackIncidents)) setFeedbackIncidents(data.feedbackIncidents);
             if (Array.isArray(data.soundCheckItems)) setSoundCheckItems(data.soundCheckItems);
             if (Array.isArray(data.events)) setEvents(data.events);
+            if (Array.isArray(data.automationLanes) && data.automationLanes.length > 0) {
+              setAutomationLanes(data.automationLanes);
+            }
+            if (typeof data.automationDurationSec === 'number' && data.automationDurationSec >= 10) {
+              setAutomationTransport((prev) => ({
+                ...prev,
+                durationSec: data.automationDurationSec,
+              }));
+            }
             if (data.updatedAt) setDbUpdatedAt(data.updatedAt);
+            window.setTimeout(() => {
+              isRemoteUpdateRef.current = false;
+            }, 60);
           }
         }
       } catch {
@@ -600,6 +897,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       }
     }
     void init();
+
+    const unsubAudioRecovery = audioEngine.subscribeAudioRecovery((ctxState) => {
+      setAudioUnlocked(ctxState === 'running');
+    });
 
     const handleDeviceChange = () => {
       void scanHardware(false).then((list) => {
@@ -617,18 +918,266 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     }
     return () => {
       cancelled = true;
+      unsubAudioRecovery();
       if (typeof navigator !== 'undefined' && navigator.mediaDevices?.removeEventListener) {
         navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
       }
     };
   }, [scanHardware, logEvent]);
 
-  // Apply full-workspace CSS variable theme attribute on root element
+  // Multi-Seat Bi-Directional WebSocket Synchronization (/ws)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
+    let closedByCleanup = false;
+    let reconnectTimer: number | null = null;
+
+    const connect = () => {
+      if (closedByCleanup) return;
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        ws.send(
+          JSON.stringify({
+            type: 'hello',
+            clientId: clientIdRef.current,
+            role: stateRef.current.operatorRole,
+          })
+        );
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(String(ev.data)) as {
+            type?: string;
+            senderClientId?: string;
+            connectedSeats?: number;
+            revisionId?: number;
+            graphVersion?: number;
+            channelId?: string;
+            channel?: ChannelStrip;
+            busId?: string;
+            bus?: BusNode;
+            dcaGroups?: DcaGroupState[];
+            state?: {
+              profileId?: HardwareProfileId;
+              workspaceTheme?: ConsoleThemeId;
+              activeSceneId?: string;
+              graphVersion?: number;
+              channels?: ChannelStrip[];
+              buses?: BusNode[];
+              speakers?: SpeakerBand[];
+              virtualCables?: VirtualCableNode[];
+              virtualDi?: VirtualDiState;
+              dcaGroups?: DcaGroupState[];
+              fxRack?: FxSlotState[];
+              matrixZones?: MatrixZone[];
+              proposals?: AiProposal[];
+            };
+          };
+
+          if (msg.type === 'presence:update' && typeof msg.connectedSeats === 'number') {
+            setConnectedSeats(Math.max(1, msg.connectedSeats));
+            return;
+          }
+
+          if (msg.senderClientId && msg.senderClientId === clientIdRef.current) {
+            if (typeof msg.revisionId === 'number') {
+              revisionIdRef.current = Math.max(revisionIdRef.current, msg.revisionId);
+            }
+            return;
+          }
+
+          isRemoteUpdateRef.current = true;
+          if (typeof msg.revisionId === 'number') {
+            revisionIdRef.current = Math.max(revisionIdRef.current, msg.revisionId);
+          }
+
+          if (msg.type === 'channel:patched' && msg.channel && msg.channelId) {
+            setChannels((prev) =>
+              prev.map((c) => (c.id === msg.channelId ? { ...c, ...msg.channel } : c))
+            );
+            if (typeof msg.graphVersion === 'number') setGraphVersion(msg.graphVersion);
+          } else if (msg.type === 'bus:patched' && msg.bus && msg.busId) {
+            setBuses((prev) =>
+              prev.map((b) => (b.id === msg.busId ? { ...b, ...msg.bus } : b))
+            );
+            if (typeof msg.graphVersion === 'number') setGraphVersion(msg.graphVersion);
+          } else if (msg.type === 'dca:patched' && Array.isArray(msg.dcaGroups)) {
+            setDcaGroups(msg.dcaGroups);
+          } else if (msg.type === 'state:updated' && msg.state) {
+            if (msg.state.profileId) setProfileId(msg.state.profileId);
+            if (msg.state.workspaceTheme) setWorkspaceTheme(msg.state.workspaceTheme);
+            if (msg.state.activeSceneId) setActiveSceneId(msg.state.activeSceneId);
+            if (typeof msg.state.graphVersion === 'number') setGraphVersion(msg.state.graphVersion);
+            if (Array.isArray(msg.state.channels)) setChannels(msg.state.channels);
+            if (Array.isArray(msg.state.buses)) setBuses(msg.state.buses);
+            if (Array.isArray(msg.state.speakers)) setSpeakers(msg.state.speakers);
+            if (Array.isArray(msg.state.virtualCables)) setVirtualCables(msg.state.virtualCables);
+            if (msg.state.virtualDi) setVirtualDi(msg.state.virtualDi);
+            if (Array.isArray(msg.state.dcaGroups)) setDcaGroups(msg.state.dcaGroups);
+            if (Array.isArray(msg.state.fxRack)) setFxRack(msg.state.fxRack);
+            if (Array.isArray(msg.state.matrixZones)) setMatrixZones(msg.state.matrixZones);
+            if (Array.isArray(msg.state.proposals)) setProposals(msg.state.proposals);
+          } else if (msg.type === 'console:reset') {
+            void fetch('/api/console/bootstrap')
+              .then((r) => (r.ok ? r.json() : null))
+              .then((boot) => {
+                if (!boot) return;
+                if (Array.isArray(boot.channels)) setChannels(boot.channels);
+                if (Array.isArray(boot.buses)) setBuses(boot.buses);
+                if (Array.isArray(boot.speakers)) setSpeakers(boot.speakers);
+                if (Array.isArray(boot.dcaGroups)) setDcaGroups(boot.dcaGroups);
+                if (Array.isArray(boot.fxRack)) setFxRack(boot.fxRack);
+                if (Array.isArray(boot.matrixZones)) setMatrixZones(boot.matrixZones);
+              })
+              .catch(() => {});
+          }
+
+          window.setTimeout(() => {
+            isRemoteUpdateRef.current = false;
+          }, 50);
+        } catch {
+          // ignore malformed WS event
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (!closedByCleanup) {
+          reconnectTimer = window.setTimeout(connect, 2200);
+        }
+      };
+
+      ws.onerror = () => {
+        setWsConnected(false);
+      };
+    };
+
+    connect();
+    return () => {
+      closedByCleanup = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      try {
+        wsRef.current?.close();
+      } catch {
+        // safe close
+      }
+      wsRef.current = null;
+    };
+  }, []);
+
+  // Web MIDI Hardware Controller Support (X-Touch / Mackie CC Faders & Mutes)
+  useEffect(() => {
+    if (typeof navigator === 'undefined') return;
+    const nav = navigator as Navigator & {
+      requestMIDIAccess?: () => Promise<{
+        inputs: Map<
+          string,
+          {
+            name?: string;
+            onmidimessage: ((ev: { data: Uint8Array }) => void) | null;
+          }
+        >;
+        onstatechange: (() => void) | null;
+      }>;
+    };
+    if (typeof nav.requestMIDIAccess !== 'function') return;
+
+    let cancelled = false;
+    void nav
+      .requestMIDIAccess()
+      .then((access) => {
+        if (cancelled) return;
+        const bindInputs = () => {
+          const names: string[] = [];
+          access.inputs.forEach((input) => {
+            names.push(input.name || 'MIDI Surface');
+            input.onmidimessage = (ev) => {
+              const data = ev.data;
+              if (!data || data.length < 3) return;
+              const status = data[0] & 0xf0;
+              const byte1 = data[1];
+              const byte2 = data[2];
+
+              if (status === 0xb0) {
+                // CC 0..15 -> Fader level -75..+10 dB
+                if (byte1 <= 15) {
+                  const targetCh = stateRef.current.channels[byte1];
+                  if (targetCh) {
+                    const db = Number((-75 + (byte2 / 127) * 85).toFixed(1));
+                    setChannels((prev) =>
+                      prev.map((c) => (c.id === targetCh.id ? { ...c, faderDb: db } : c))
+                    );
+                    setMidiLastMessage(`CH ${targetCh.number} Fader -> ${db} dB`);
+                  }
+                } else if (byte1 >= 16 && byte1 <= 31 && byte2 >= 64) {
+                  const targetCh = stateRef.current.channels[byte1 - 16];
+                  if (targetCh) {
+                    setChannels((prev) =>
+                      prev.map((c) => (c.id === targetCh.id ? { ...c, mute: !c.mute } : c))
+                    );
+                    setMidiLastMessage(`CH ${targetCh.number} Mute toggled`);
+                  }
+                }
+              } else if (status === 0xe0) {
+                // Pitchbend on MIDI channel (data[0] & 0x0f) -> Fader
+                const midiCh = data[0] & 0x0f;
+                const targetCh = stateRef.current.channels[midiCh];
+                if (targetCh) {
+                  const val14 = ((byte2 << 7) | byte1) / 16383;
+                  const db = Number((-75 + val14 * 85).toFixed(1));
+                  setChannels((prev) =>
+                    prev.map((c) => (c.id === targetCh.id ? { ...c, faderDb: db } : c))
+                  );
+                  setMidiLastMessage(`CH ${targetCh.number} PB Fader -> ${db} dB`);
+                }
+              } else if (status === 0x90 && byte2 > 0 && byte1 < 16) {
+                const targetCh = stateRef.current.channels[byte1];
+                if (targetCh) {
+                  setChannels((prev) =>
+                    prev.map((c) => (c.id === targetCh.id ? { ...c, mute: !c.mute } : c))
+                  );
+                  setMidiLastMessage(`CH ${targetCh.number} Note Mute`);
+                }
+              }
+            };
+          });
+          setMidiConnectedDevices(names);
+        };
+        bindInputs();
+        access.onstatechange = bindInputs;
+      })
+      .catch(() => {
+        // MIDI access denied or unavailable
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Apply full-workspace CSS variable theme attribute & High-Vis Sunlight Mode on root element
   useEffect(() => {
     if (typeof document !== 'undefined') {
       document.documentElement.setAttribute('data-console-theme', workspaceTheme);
     }
   }, [workspaceTheme]);
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-high-vis', highVisibilityMode ? 'true' : 'false');
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(LOCAL_HIGH_VIS_STORAGE_KEY, String(highVisibilityMode));
+      } catch {
+        // ignore
+      }
+    }
+  }, [highVisibilityMode]);
 
   // Persist Console Snapshot Profiles to local browser profile storage
   useEffect(() => {
@@ -640,36 +1189,81 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     }
   }, [snapshots]);
 
+  // Persist Parameter Automation Lanes to local browser storage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(
+        LOCAL_AUTOMATION_STORAGE_KEY,
+        JSON.stringify({
+          lanes: automationLanes,
+          durationSec: automationTransport.durationSec,
+        })
+      );
+    } catch {
+      // Ignore storage quota errors cleanly
+    }
+  }, [automationLanes, automationTransport.durationSec]);
+
   // Debounced DB state persistence whenever core mixer state updates after hydration
   useEffect(() => {
-    if (!dbHydrated) return;
+    if (!dbHydrated || isRemoteUpdateRef.current) return;
     const handle = window.setTimeout(() => {
+      if (isRemoteUpdateRef.current) return;
       setDbSyncing(true);
       void fetch('/api/console/state', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Role': stateRef.current.operatorRole,
+        },
         body: JSON.stringify({
           profileId,
           workspaceTheme,
           activeSceneId,
           graphVersion,
+          revisionId: revisionIdRef.current,
+          clientId: clientIdRef.current,
           channels,
           buses,
           speakers,
           virtualCables,
           virtualDi,
+          dcaGroups,
+          fxRack,
+          matrixZones,
           proposals,
+          automationLanes,
+          automationDurationSec: automationTransport.durationSec,
         }),
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((res) => {
           if (res?.updatedAt) setDbUpdatedAt(res.updatedAt);
+          if (typeof res?.revisionId === 'number') revisionIdRef.current = res.revisionId;
         })
         .catch(() => {})
         .finally(() => setDbSyncing(false));
     }, 320);
     return () => window.clearTimeout(handle);
-  }, [dbHydrated, profileId, workspaceTheme, activeSceneId, graphVersion, channels, buses, speakers, virtualCables, virtualDi, proposals]);
+  }, [
+    dbHydrated,
+    profileId,
+    workspaceTheme,
+    activeSceneId,
+    graphVersion,
+    channels,
+    buses,
+    speakers,
+    virtualCables,
+    virtualDi,
+    dcaGroups,
+    fxRack,
+    matrixZones,
+    proposals,
+    automationLanes,
+    automationTransport.durationSec,
+  ]);
 
   // Recording elapsed duration ticker
   useEffect(() => {
@@ -680,7 +1274,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     return () => window.clearInterval(t);
   }, [recordingActive]);
 
-  // 25 Hz genuine Web Audio AnalyserNode metering + autonomous Dugan/FFT DSP intelligence
+  // 25 Hz genuine Web Audio AnalyserNode metering + autonomous Dugan/FFT DSP + BS.1770 LUFS + Virtual Soundcheck playhead
   useEffect(() => {
     const timer = window.setInterval(() => {
       const s = stateRef.current;
@@ -691,12 +1285,17 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         s.intelligenceConfig,
         s.speakers,
         s.virtualCables,
-        s.globalDspBypass
+        s.globalDspBypass,
+        s.dcaGroups,
+        s.matrixZones,
+        s.soloMode
       );
       setMeters(sample.meters);
       setSpectrum(sample.spectrum);
       setRoomSpectrum(sample.roomSpectrum);
       setSystemIntelligence(sample.systemIntelligence);
+      setBroadcastLoudness(sample.broadcastLoudness);
+      setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
 
       const cand = sample.liveFeedbackCandidate;
       if (cand) {
@@ -742,10 +1341,146 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     return () => window.clearInterval(timer);
   }, []);
 
-  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, virtual cables, Virtual DI, or Global DSP Bypass change
+  const applyAutomationAtTime = useCallback((timeSec: number) => {
+    const s = stateRef.current;
+    if (s.automationTransport.mode === 'off') return;
+    const activeLanes = s.automationLanes.filter((l) => l.enabled && l.points.length > 0);
+    if (activeLanes.length === 0) return;
+
+    const nowMs = Date.now();
+    const pendingByChannel = new Map<string, Partial<ChannelStrip>>();
+    const pendingSendByChannel = new Map<string, { busKey: 'mon1' | 'livestream'; levelDb: number }[]>();
+
+    for (const lane of activeLanes) {
+      if (s.automationTransport.mode === 'touch' || s.automationTransport.mode === 'write') {
+        const lastTouch = lastTouchAtRef.current.get(`${lane.channelId}:${lane.parameter}`);
+        if (lastTouch && nowMs - lastTouch < 350) continue;
+      }
+      const val = evaluateAutomationLaneAt(lane, timeSec);
+      if (val === null) continue;
+
+      if (lane.parameter === 'sendMon1' || lane.parameter === 'sendStream') {
+        const busKey = lane.parameter === 'sendMon1' ? 'mon1' : 'livestream';
+        const list = pendingSendByChannel.get(lane.channelId) ?? [];
+        list.push({ busKey, levelDb: Number(val.toFixed(1)) });
+        pendingSendByChannel.set(lane.channelId, list);
+      } else {
+        const patch = pendingByChannel.get(lane.channelId) ?? {};
+        if (lane.parameter === 'mute') {
+          patch.mute = val >= 0.5;
+        } else if (lane.parameter === 'hpfFreqHz') {
+          patch.hpfFreqHz = Math.round(val);
+        } else if (lane.parameter === 'pan') {
+          patch.pan = Math.round(val);
+        } else if (lane.parameter === 'softwareTrimDb') {
+          patch.softwareTrimDb = Number(val.toFixed(1));
+        } else {
+          patch.faderDb = Number(val.toFixed(1));
+        }
+        pendingByChannel.set(lane.channelId, patch);
+      }
+    }
+
+    if (pendingByChannel.size === 0 && pendingSendByChannel.size === 0) return;
+
+    setChannels((prev) => {
+      let changed = false;
+      const next = prev.map((ch) => {
+        const patch = pendingByChannel.get(ch.id);
+        const sendPatches = pendingSendByChannel.get(ch.id);
+        if (!patch && !sendPatches) return ch;
+
+        let stripChanged = false;
+        let updated = ch;
+        if (patch) {
+          if (patch.faderDb !== undefined && Math.abs(patch.faderDb - ch.faderDb) > 0.04) {
+            stripChanged = true;
+          } else if (patch.pan !== undefined && Math.abs(patch.pan - ch.pan) > 0.4) {
+            stripChanged = true;
+          } else if (
+            patch.softwareTrimDb !== undefined &&
+            Math.abs(patch.softwareTrimDb - ch.softwareTrimDb) > 0.04
+          ) {
+            stripChanged = true;
+          } else if (patch.hpfFreqHz !== undefined && Math.abs(patch.hpfFreqHz - ch.hpfFreqHz) > 0.4) {
+            stripChanged = true;
+          } else if (patch.mute !== undefined && patch.mute !== ch.mute) {
+            stripChanged = true;
+          }
+          if (stripChanged) {
+            updated = { ...updated, ...patch };
+          }
+        }
+
+        if (sendPatches) {
+          let nextSends = updated.sends;
+          for (const sp of sendPatches) {
+            const cur = nextSends[sp.busKey];
+            if (!cur || Math.abs(sp.levelDb - cur.levelDb) > 0.04) {
+              if (nextSends === updated.sends) nextSends = { ...updated.sends };
+              nextSends[sp.busKey] = {
+                ...(cur ?? { levelDb: -12, preFader: false, enabled: true }),
+                levelDb: sp.levelDb,
+                enabled: sp.levelDb > -59,
+              };
+              stripChanged = true;
+            }
+          }
+          if (nextSends !== updated.sends) {
+            updated = { ...updated, sends: nextSends };
+          }
+        }
+
+        if (stripChanged) changed = true;
+        return stripChanged ? updated : ch;
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
+  // Parameter Automation 30Hz playback transport loop
   useEffect(() => {
-    audioEngine.syncGraph(channels, buses, virtualDi, speakers, virtualCables, globalDspBypass);
-  }, [channels, buses, virtualDi, speakers, virtualCables, globalDspBypass]);
+    if (!automationTransport.playing) return;
+    let lastPerf = performance.now();
+    const timer = window.setInterval(() => {
+      const nowPerf = performance.now();
+      const dtSec = Math.max(0, Math.min(0.2, (nowPerf - lastPerf) / 1000));
+      lastPerf = nowPerf;
+      let targetTime = stateRef.current.automationTransport.playheadSec;
+      setAutomationTransport((prev) => {
+        if (!prev.playing) return prev;
+        let nextSec = prev.playheadSec + dtSec;
+        if (nextSec >= prev.durationSec) {
+          if (prev.loop) {
+            nextSec = nextSec % prev.durationSec;
+          } else {
+            targetTime = prev.durationSec;
+            return { ...prev, playheadSec: prev.durationSec, playing: false, recording: false };
+          }
+        }
+        targetTime = nextSec;
+        return { ...prev, playheadSec: nextSec };
+      });
+      applyAutomationAtTime(targetTime);
+    }, 33);
+    return () => window.clearInterval(timer);
+  }, [automationTransport.playing, applyAutomationAtTime]);
+
+  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, virtual cables, Virtual DI, DCA, FX, Matrix, Solo, or Bypass change
+  useEffect(() => {
+    audioEngine.syncGraph(
+      channels,
+      buses,
+      virtualDi,
+      speakers,
+      virtualCables,
+      globalDspBypass,
+      dcaGroups,
+      fxRack,
+      matrixZones,
+      soloMode
+    );
+  }, [channels, buses, virtualDi, speakers, virtualCables, globalDspBypass, dcaGroups, fxRack, matrixZones, soloMode]);
 
   const captureSnapshot = useCallback((): ConsoleSnapshotState => {
     return {
@@ -827,7 +1562,11 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         speakers,
         virtualCables,
         virtualDi,
-        globalDspBypass
+        globalDspBypass,
+        dcaGroups,
+        fxRack,
+        matrixZones,
+        soloMode
       );
       setAudioUnlocked(ok);
       void scanHardware(false);
@@ -838,7 +1577,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         message: `Real-time Web Audio DSP engine engaged at ${(audioEngine.getAudioClockTelemetry().sampleRateHz / 1000).toFixed(1)} kHz.`,
       });
     }
-  }, [audioUnlocked, buses, channels, speakers, virtualCables, virtualDi, globalDspBypass, logEvent, scanHardware]);
+  }, [audioUnlocked, buses, channels, speakers, virtualCables, virtualDi, globalDspBypass, dcaGroups, fxRack, matrixZones, soloMode, logEvent, scanHardware]);
 
   const setGlobalDspBypass = useCallback(
     (bypassed: boolean) => {
@@ -1192,20 +1931,36 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   );
 
   const toggleStreamRecording = useCallback(
-    async (busId = 'bus-stream') => {
+    async (targetOverride?: string) => {
+      const target = targetOverride ?? recordingTargetId;
       if (recordingActive) {
         const res = await audioEngine.stopBusRecording();
         setRecordingActive(false);
         if (res) {
-          if (lastRecordingUrl) URL.revokeObjectURL(lastRecordingUrl);
+          const targetLabel =
+            res.targetId === 'system-master'
+              ? 'Whole System Output'
+              : buses.find((b) => b.id === res.targetId)?.name ?? res.targetId.toUpperCase();
+          const newTake: RecordedTake = {
+            id: `take-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            targetId: res.targetId,
+            targetLabel,
+            filename: res.filename,
+            blobUrl: res.blobUrl,
+            mimeType: res.mimeType,
+            durationSec: res.durationSec,
+            sizeBytes: res.sizeBytes,
+            createdAt: new Date().toTimeString().slice(0, 8),
+          };
+          setRecordedTakes((prev) => [newTake, ...prev]);
           setLastRecordingUrl(res.blobUrl);
           setLastRecordingFilename(res.filename);
           logEvent({
             family: 'device',
             severity: 'info',
-            service: 'BroadcastRecorder',
-            nodeId: busId,
-            message: `Saved ${res.durationSec}s live recording (${res.filename}).`,
+            service: res.targetId === 'system-master' ? 'SystemOutputRecorder' : 'BroadcastRecorder',
+            nodeId: res.targetId,
+            message: `Saved ${res.durationSec}s ${targetLabel} capture (${res.filename}).`,
           });
         }
         return { ok: true };
@@ -1214,23 +1969,140 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
           const ok = await audioEngine.unlockAndStart(channels, buses, speakers, virtualCables, virtualDi);
           setAudioUnlocked(ok);
         }
-        const started = audioEngine.startBusRecording(busId);
+        const started = audioEngine.startBusRecording(target);
         if (started.ok) {
+          setRecordingTargetId(target);
           setRecordingDurationSec(0);
           setRecordingActive(true);
+          const targetLabel =
+            target === 'system-master'
+              ? 'Whole System Output'
+              : buses.find((b) => b.id === target)?.name ?? target.toUpperCase();
           logEvent({
             family: 'device',
             severity: 'info',
-            service: 'BroadcastRecorder',
-            nodeId: busId,
-            message: `Started live ${started.mimeType ?? 'audio'} capture on ${busId.toUpperCase()}.`,
+            service: target === 'system-master' ? 'SystemOutputRecorder' : 'BroadcastRecorder',
+            nodeId: target,
+            message: `Started live ${started.mimeType ?? 'audio'} capture on ${targetLabel}.`,
           });
         }
         return started;
       }
     },
-    [recordingActive, lastRecordingUrl, channels, buses, speakers, virtualCables, virtualDi, logEvent]
+    [recordingActive, recordingTargetId, channels, buses, speakers, virtualCables, virtualDi, logEvent]
   );
+
+  const deleteRecordedTake = useCallback(
+    (takeId: string) => {
+      setRecordedTakes((prev) => {
+        const target = prev.find((t) => t.id === takeId);
+        if (target) {
+          URL.revokeObjectURL(target.blobUrl);
+          if (lastRecordingUrl === target.blobUrl) {
+            const nextNewest = prev.find((t) => t.id !== takeId);
+            setLastRecordingUrl(nextNewest?.blobUrl ?? null);
+            setLastRecordingFilename(nextNewest?.filename ?? null);
+          }
+        }
+        return prev.filter((t) => t.id !== takeId);
+      });
+    },
+    [lastRecordingUrl]
+  );
+
+  const toggleMultitrackArm = useCallback((channelId: string) => {
+    setMultitrackArmedIds((prev) =>
+      prev.includes(channelId) ? prev.filter((id) => id !== channelId) : [...prev, channelId]
+    );
+  }, []);
+
+  const armMultitrackPreset = useCallback(
+    (preset: 'all' | 'active' | 'none') => {
+      if (preset === 'none') {
+        setMultitrackArmedIds([]);
+      } else if (preset === 'all') {
+        setMultitrackArmedIds(channels.map((c) => c.id));
+      } else {
+        const active = channels.filter((c) => c.sourceBinding?.active).map((c) => c.id);
+        setMultitrackArmedIds(
+          active.length > 0 ? active : channels.slice(0, 4).map((c) => c.id)
+        );
+      }
+    },
+    [channels]
+  );
+
+  const toggleMultitrackRecording = useCallback(async () => {
+    if (multitrackRecording) {
+      const session = audioEngine.stopMultitrackRecording();
+      setMultitrackRecording(false);
+      if (session) {
+        setMultitrackSessions((prev) => [session, ...prev]);
+        logEvent({
+          family: 'device',
+          severity: 'info',
+          service: 'MultitrackWavRecorder',
+          message: `Captured ${session.tracks.length} separate ${session.bitDepth}-bit WAV track(s) (${session.durationSec.toFixed(1)}s @ ${(session.sampleRateHz / 1000).toFixed(1)}kHz).`,
+        });
+      }
+      return { ok: true };
+    }
+
+    const armedChannels = channels.filter((c) => multitrackArmedIds.includes(c.id));
+    if (armedChannels.length === 0) {
+      return { ok: false, error: 'Arm at least one channel before starting multitrack WAV capture.' };
+    }
+
+    if (!audioEngine.isAudioUnlocked()) {
+      const ok = await audioEngine.unlockAndStart(
+        channels,
+        buses,
+        speakers,
+        virtualCables,
+        virtualDi,
+        globalDspBypass
+      );
+      setAudioUnlocked(ok);
+    }
+
+    const res = await audioEngine.startMultitrackRecording(
+      armedChannels,
+      multitrackTapPoint,
+      multitrackBitDepth
+    );
+    if (res.ok) {
+      setMultitrackRecording(true);
+      logEvent({
+        family: 'device',
+        severity: 'info',
+        service: 'MultitrackWavRecorder',
+        message: `Started ${armedChannels.length}-track simultaneous ${multitrackBitDepth}-bit WAV capture (${multitrackTapPoint.toUpperCase()}).`,
+      });
+    }
+    return res;
+  }, [
+    multitrackRecording,
+    channels,
+    multitrackArmedIds,
+    buses,
+    speakers,
+    virtualCables,
+    virtualDi,
+    globalDspBypass,
+    multitrackTapPoint,
+    multitrackBitDepth,
+    logEvent,
+  ]);
+
+  const deleteMultitrackSession = useCallback((sessionId: string) => {
+    setMultitrackSessions((prev) => {
+      const target = prev.find((s) => s.id === sessionId);
+      if (target) {
+        target.tracks.forEach((t) => URL.revokeObjectURL(t.blobUrl));
+      }
+      return prev.filter((s) => s.id !== sessionId);
+    });
+  }, []);
 
   const toggleChannelFilePlayback = useCallback((channelId: string): boolean => {
     const playing = audioEngine.toggleChannelFilePlayback(channelId);
@@ -1298,10 +2170,24 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   );
 
   const resetFactoryState = useCallback(async () => {
+    if (stateRef.current.operatorRole === 'volunteer') {
+      logEvent({
+        family: 'graph',
+        severity: 'warning',
+        service: 'RBAC',
+        message: 'Volunteer role cannot reset factory console state.',
+      });
+      return;
+    }
     channels.forEach((c) => audioEngine.detachChannelSource(c.id));
-    const res = await fetch('/api/console/reset', { method: 'POST' });
+    const res = await fetch('/api/console/reset', {
+      method: 'POST',
+      headers: { 'X-Operator-Role': stateRef.current.operatorRole },
+    });
     if (res.ok) {
       const data = await res.json();
+      isRemoteUpdateRef.current = true;
+      if (typeof data.revisionId === 'number') revisionIdRef.current = data.revisionId;
       setProfileId(data.profileId);
       setActiveSceneId(data.activeSceneId);
       setGraphVersion(data.graphVersion);
@@ -1310,14 +2196,20 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setSpeakers(data.speakers);
       if (Array.isArray(data.virtualCables)) setVirtualCables(data.virtualCables);
       setVirtualDi(data.virtualDi);
+      if (Array.isArray(data.dcaGroups)) setDcaGroups(data.dcaGroups);
+      if (Array.isArray(data.fxRack)) setFxRack(data.fxRack);
+      if (Array.isArray(data.matrixZones)) setMatrixZones(data.matrixZones);
       setProposals(data.proposals ?? []);
       setScenes(data.scenes);
       setFeedbackIncidents(data.feedbackIncidents ?? []);
       setSoundCheckItems(data.soundCheckItems);
       setEvents(data.events ?? []);
       setDbUpdatedAt(data.updatedAt ?? null);
+      window.setTimeout(() => {
+        isRemoteUpdateRef.current = false;
+      }, 60);
     }
-  }, [channels]);
+  }, [channels, logEvent]);
 
   const setTestToneConfig = useCallback(
     (active: boolean, kind?: 'pink' | 'sine1k' | 'sweep', gainDb?: number) => {
@@ -1362,10 +2254,77 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     [pushUndo, logEvent]
   );
 
+  const recordAutomationFromEdit = useCallback(
+    (channelId: string, parameter: AutomationParameterKey, rawValue: number) => {
+      lastTouchAtRef.current.set(`${channelId}:${parameter}`, Date.now());
+      const tr = stateRef.current.automationTransport;
+      const shouldWrite =
+        tr.recording || (tr.playing && (tr.mode === 'write' || tr.mode === 'touch'));
+      if (!shouldWrite) return;
+
+      const quantizedTime = Math.max(0, Math.min(tr.durationSec, Math.round(tr.playheadSec * 20) / 20));
+      const clampedVal = clampAutomationValue(parameter, rawValue);
+      setAutomationLanes((prev) => {
+        const existingIdx = prev.findIndex(
+          (l) => l.channelId === channelId && l.parameter === parameter
+        );
+        if (existingIdx === -1) {
+          const newLane: AutomationLane = {
+            id: `auto-${channelId}-${parameter}-${Date.now().toString(36)}`,
+            channelId,
+            parameter,
+            enabled: true,
+            points: [
+              {
+                id: `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                timeSec: quantizedTime,
+                value: clampedVal,
+              },
+            ],
+          };
+          return [...prev, newLane];
+        }
+        return prev.map((lane, idx) => {
+          if (idx !== existingIdx) return lane;
+          const nearIdx = lane.points.findIndex((p) => Math.abs(p.timeSec - quantizedTime) < 0.045);
+          const nextPts =
+            nearIdx >= 0
+              ? lane.points.map((p, pIdx) => (pIdx === nearIdx ? { ...p, value: clampedVal } : p))
+              : [
+                  ...lane.points,
+                  {
+                    id: `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                    timeSec: quantizedTime,
+                    value: clampedVal,
+                  },
+                ].sort((a, b) => a.timeSec - b.timeSec);
+          return { ...lane, enabled: true, points: nextPts };
+        });
+      });
+    },
+    []
+  );
+
   const updateChannel = useCallback(
     (channelId: string, patch: Partial<ChannelStrip>, reason?: string) => {
       const target = channels.find((c) => c.id === channelId);
       if (!target) return { ok: false, error: 'Channel not found in active SignalGraph.' };
+
+      if (stateRef.current.operatorRole === 'volunteer') {
+        const volunteerAllowed = new Set(['faderDb', 'mute', 'solo']);
+        const disallowed = Object.keys(patch).some((k) => !volunteerAllowed.has(k));
+        if (disallowed) {
+          const err = 'Volunteer role is restricted to fader levels, mute, and solo.';
+          logEvent({
+            family: 'graph',
+            severity: 'warning',
+            service: 'RBAC',
+            nodeId: channelId,
+            message: `Blocked restricted write on ${target.shortName}: ${err}`,
+          });
+          return { ok: false, error: err };
+        }
+      }
 
       const primaryCaps = hardwareProfile.devices[0]?.capabilities;
       if (patch.hardwarePreampDb !== undefined && primaryCaps?.preampGain === 'manual') {
@@ -1397,8 +2356,43 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       }
 
       if (reason) pushUndo();
+      if (patch.faderDb !== undefined) recordAutomationFromEdit(channelId, 'faderDb', patch.faderDb);
+      if (patch.pan !== undefined) recordAutomationFromEdit(channelId, 'pan', patch.pan);
+      if (patch.softwareTrimDb !== undefined) {
+        recordAutomationFromEdit(channelId, 'softwareTrimDb', patch.softwareTrimDb);
+      }
+      if (patch.mute !== undefined) recordAutomationFromEdit(channelId, 'mute', patch.mute ? 1 : 0);
+      if (patch.hpfFreqHz !== undefined) recordAutomationFromEdit(channelId, 'hpfFreqHz', patch.hpfFreqHz);
+
       setChannels((prev) => prev.map((c) => (c.id === channelId ? { ...c, ...patch } : c)));
       setGraphVersion((v) => v + 1);
+
+      // Atomic PATCH for instant multi-seat WebSocket fan-out & normalized SQLite row persistence
+      const prevTimer = channelPatchTimersRef.current.get(channelId);
+      if (prevTimer) window.clearTimeout(prevTimer);
+      const patchCopy = { ...patch };
+      const timerId = window.setTimeout(() => {
+        channelPatchTimersRef.current.delete(channelId);
+        void fetch(`/api/console/channels/${encodeURIComponent(channelId)}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Operator-Role': stateRef.current.operatorRole,
+          },
+          body: JSON.stringify({
+            patch: patchCopy,
+            expectedRevisionId: revisionIdRef.current,
+            clientId: clientIdRef.current,
+          }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((res) => {
+            if (typeof res?.revisionId === 'number') revisionIdRef.current = res.revisionId;
+          })
+          .catch(() => {});
+      }, 45);
+      channelPatchTimersRef.current.set(channelId, timerId);
+
       if (reason) {
         logEvent({
           family: 'dsp',
@@ -1410,7 +2404,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       }
       return { ok: true };
     },
-    [channels, hardwareProfile, pushUndo, logEvent]
+    [channels, hardwareProfile, pushUndo, logEvent, recordAutomationFromEdit]
   );
 
   const setIntelligenceConfig = useCallback(
@@ -1473,6 +2467,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const updateChannelSend = useCallback(
     (channelId: string, busKey: string, patch: Partial<ChannelSendConfig>) => {
+      if (patch.levelDb !== undefined) {
+        if (busKey === 'mon1') recordAutomationFromEdit(channelId, 'sendMon1', patch.levelDb);
+        if (busKey === 'livestream') recordAutomationFromEdit(channelId, 'sendStream', patch.levelDb);
+      }
       setChannels((prev) =>
         prev.map((c) => {
           if (c.id !== channelId) return c;
@@ -1488,7 +2486,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       );
       setGraphVersion((v) => v + 1);
     },
-    []
+    [recordAutomationFromEdit]
   );
 
   const addChannel = useCallback(
@@ -1671,9 +2669,48 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const updateBus = useCallback(
     (busId: string, patch: Partial<BusNode>, reason?: string) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        const volunteerAllowed = new Set(['faderDb', 'mute', 'solo']);
+        if (Object.keys(patch).some((k) => !volunteerAllowed.has(k))) {
+          logEvent({
+            family: 'graph',
+            severity: 'warning',
+            service: 'RBAC',
+            nodeId: busId,
+            message: 'Volunteer role cannot modify bus EQ or limiter thresholds.',
+          });
+          return;
+        }
+      }
       if (reason) pushUndo();
       setBuses((prev) => prev.map((b) => (b.id === busId ? { ...b, ...patch } : b)));
       setGraphVersion((v) => v + 1);
+
+      const prevTimer = busPatchTimersRef.current.get(busId);
+      if (prevTimer) window.clearTimeout(prevTimer);
+      const patchCopy = { ...patch };
+      const timerId = window.setTimeout(() => {
+        busPatchTimersRef.current.delete(busId);
+        void fetch(`/api/console/buses/${encodeURIComponent(busId)}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Operator-Role': stateRef.current.operatorRole,
+          },
+          body: JSON.stringify({
+            patch: patchCopy,
+            expectedRevisionId: revisionIdRef.current,
+            clientId: clientIdRef.current,
+          }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((res) => {
+            if (typeof res?.revisionId === 'number') revisionIdRef.current = res.revisionId;
+          })
+          .catch(() => {});
+      }, 45);
+      busPatchTimersRef.current.set(busId, timerId);
+
       if (reason) {
         logEvent({
           family: 'dsp',
@@ -1778,6 +2815,16 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const updateSpeaker = useCallback(
     (speakerId: string, patch: Partial<SpeakerBand>, reason?: string) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'graph',
+          severity: 'warning',
+          service: 'RBAC',
+          nodeId: speakerId,
+          message: 'Volunteer role cannot modify speaker crossover or limiter configuration.',
+        });
+        return;
+      }
       if (reason) pushUndo();
       setSpeakers((prev) => prev.map((s) => (s.id === speakerId ? { ...s, ...patch } : s)));
       setGraphVersion((v) => v + 1);
@@ -2019,6 +3066,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const recallScene = useCallback(
     (sceneId: string) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'scene',
+          severity: 'warning',
+          service: 'RBAC',
+          message: 'Volunteer role cannot recall global service scenes.',
+        });
+        return;
+      }
       const scene = scenes.find((s) => s.id === sceneId);
       if (!scene) return;
       pushUndo();
@@ -2027,7 +3083,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         prev.map((ch) => ({
           ...ch,
           faderDb: scene.channelFaders[ch.id] ?? ch.faderDb,
-          mute: scene.channelMutes[ch.id] ?? ch.mute,
+          mute: ch.muteSafe ? ch.mute : (scene.channelMutes[ch.id] ?? ch.mute),
           hpfFreqHz: scene.channelHpf[ch.id] ?? ch.hpfFreqHz,
         }))
       );
@@ -2044,7 +3100,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         family: 'scene',
         severity: 'info',
         service: 'SceneManager',
-        message: `Recalled scene "${scene.name}" (v${scene.version}) atomically across SignalGraph.`,
+        message: `Recalled scene "${scene.name}" (v${scene.version}) atomically across SignalGraph (Mute-Safe strips preserved).`,
       });
     },
     [scenes, pushUndo, logEvent]
@@ -2052,6 +3108,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const saveCurrentAsScene = useCallback(
     (name: string, serviceType: string) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'scene',
+          severity: 'warning',
+          service: 'RBAC',
+          message: 'Volunteer role cannot save global service scenes.',
+        });
+        return;
+      }
       const channelFaders: Record<string, number> = {};
       const channelMutes: Record<string, boolean> = {};
       const channelHpf: Record<string, number> = {};
@@ -2082,7 +3147,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setActiveSceneId(newScene.id);
       void fetch('/api/console/scenes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Role': stateRef.current.operatorRole,
+        },
         body: JSON.stringify({ scene: newScene }),
       }).catch(() => {});
       logEvent({
@@ -2137,7 +3205,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setActiveSnapshotId(snapshot.id);
       void fetch('/api/console/snapshots', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Operator-Role': stateRef.current.operatorRole,
+        },
         body: JSON.stringify({ snapshot }),
       }).catch(() => {});
 
@@ -2451,6 +3522,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const deleteSnapshot = useCallback(
     (snapshotId: string) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'scene',
+          severity: 'warning',
+          service: 'RBAC',
+          message: 'Volunteer role cannot delete saved snapshots.',
+        });
+        return;
+      }
       const removed = snapshots.find((s) => s.id === snapshotId);
       setSnapshots((prev) => prev.filter((s) => s.id !== snapshotId));
       if (activeSnapshotId === snapshotId) {
@@ -2458,6 +3538,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       }
       void fetch(`/api/console/snapshots/${encodeURIComponent(snapshotId)}`, {
         method: 'DELETE',
+        headers: { 'X-Operator-Role': stateRef.current.operatorRole },
       }).catch(() => {});
       if (removed) {
         logEvent({
@@ -2629,14 +3710,14 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       const nextActive = !muteGroupsActive[group];
       setMuteGroupsActive((prev) => ({ ...prev, [group]: nextActive }));
       setChannels((prev) =>
-        prev.map((ch) => (ch.muteGroup === group ? { ...ch, mute: nextActive } : ch))
+        prev.map((ch) => (ch.muteGroup === group && !ch.muteSafe ? { ...ch, mute: nextActive } : ch))
       );
       setGraphVersion((v) => v + 1);
       logEvent({
         family: 'dsp',
         severity: nextActive ? 'warning' : 'info',
         service: 'ChannelManager',
-        message: `Mute Group ${group} ${nextActive ? 'ENGAGED' : 'RELEASED'}.`,
+        message: `Mute Group ${group} ${nextActive ? 'ENGAGED' : 'RELEASED'} (Mute-Safe strips protected).`,
       });
     },
     [muteGroupsActive, pushUndo, logEvent]
@@ -2645,6 +3726,198 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const clearAllSolos = useCallback(() => {
     setChannels((prev) => prev.map((c) => ({ ...c, solo: false })));
     setBuses((prev) => prev.map((b) => ({ ...b, solo: false })));
+  }, []);
+
+  // Audit 2026 Action Callbacks: RBAC, High-Vis, DCA Groups, FX Rack, Matrix Zones & Virtual Soundcheck
+  const setOperatorRole = useCallback(
+    (role: OperatorRole) => {
+      setOperatorRoleState(role);
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(LOCAL_ROLE_STORAGE_KEY, role);
+        } catch {
+          // ignore
+        }
+      }
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({ type: 'hello', clientId: clientIdRef.current, role })
+        );
+      }
+      logEvent({
+        family: 'device',
+        severity: 'info',
+        service: 'RBAC',
+        message: `Operator role switched to ${role.toUpperCase()}.`,
+      });
+    },
+    [logEvent]
+  );
+
+  const setHighVisibilityMode = useCallback((v: boolean) => {
+    setHighVisibilityModeState(v);
+  }, []);
+
+  const updateDcaGroup = useCallback(
+    (id: DcaGroupId, patch: Partial<DcaGroupState>) => {
+      setDcaGroups((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+      setGraphVersion((v) => v + 1);
+    },
+    []
+  );
+
+  const updateFxSlot = useCallback(
+    (slotId: string, patch: Partial<FxSlotState>) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'dsp',
+          severity: 'warning',
+          service: 'RBAC',
+          message: 'Volunteer role cannot modify FX DSP Rack parameters.',
+        });
+        return;
+      }
+      setFxRack((prev) => prev.map((slot) => (slot.id === slotId ? { ...slot, ...patch } : slot)));
+      setGraphVersion((v) => v + 1);
+    },
+    [logEvent]
+  );
+
+  const updateMatrixZone = useCallback(
+    (zoneId: string, patch: Partial<MatrixZone>) => {
+      if (stateRef.current.operatorRole === 'volunteer') {
+        logEvent({
+          family: 'graph',
+          severity: 'warning',
+          service: 'RBAC',
+          message: 'Volunteer role cannot modify N×M Matrix Zone routing.',
+        });
+        return;
+      }
+      setMatrixZones((prev) => prev.map((z) => (z.id === zoneId ? { ...z, ...patch } : z)));
+      setGraphVersion((v) => v + 1);
+    },
+    [logEvent]
+  );
+
+  const updateMatrixZoneSource = useCallback(
+    (zoneId: string, busId: string, gainDb: number) => {
+      if (stateRef.current.operatorRole === 'volunteer') return;
+      setMatrixZones((prev) =>
+        prev.map((z) =>
+          z.id === zoneId
+            ? { ...z, sourceGains: { ...z.sourceGains, [busId]: gainDb } }
+            : z
+        )
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    []
+  );
+
+  const loadVirtualSoundcheckFiles = useCallback(
+    async (assignments: { channelId: string; file: File }[]) => {
+      try {
+        const tracks: VirtualSoundcheckTrack[] = assignments.map(({ channelId, file }, idx) => {
+          const ch = stateRef.current.channels.find((c) => c.id === channelId);
+          return {
+            id: `vsc-${channelId}-${idx}-${Date.now()}`,
+            channelId,
+            channelNumber: ch?.number ?? idx + 1,
+            filename: file.name,
+            blobUrl: URL.createObjectURL(file),
+            durationSec: 0,
+          };
+        });
+        const res = await audioEngine.loadVirtualSoundcheckTracks(
+          tracks,
+          stateRef.current.channels,
+          stateRef.current.buses,
+          stateRef.current.speakers,
+          stateRef.current.virtualCables
+        );
+        setAudioUnlocked(audioEngine.isAudioUnlocked());
+        setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
+        logEvent({
+          family: 'soundcheck',
+          severity: 'info',
+          service: 'VirtualSoundcheck',
+          message: `Mounted ${res.loadedCount} multitrack stem(s) (${res.durationSec.toFixed(1)}s) for Virtual Soundcheck.`,
+        });
+        return { ok: true, ...res };
+      } catch (err) {
+        return {
+          ok: false,
+          loadedCount: 0,
+          durationSec: 0,
+          error: err instanceof Error ? err.message : 'Failed to decode Virtual Soundcheck stems.',
+        };
+      }
+    },
+    [logEvent]
+  );
+
+  const mountMultitrackSessionForSoundcheck = useCallback(
+    async (sessionId: string) => {
+      const session = multitrackSessions.find((s) => s.id === sessionId);
+      if (!session) {
+        return { ok: false, loadedCount: 0, durationSec: 0, error: 'Multitrack session not found.' };
+      }
+      try {
+        const tracks: VirtualSoundcheckTrack[] = session.tracks.map((t, idx) => ({
+          id: `vsc-${session.id}-${t.channelId}-${idx}`,
+          channelId: t.channelId,
+          channelNumber: t.channelNumber,
+          filename: t.filename,
+          blobUrl: t.blobUrl,
+          durationSec: t.durationSec,
+        }));
+        const res = await audioEngine.loadVirtualSoundcheckTracks(
+          tracks,
+          stateRef.current.channels,
+          stateRef.current.buses,
+          stateRef.current.speakers,
+          stateRef.current.virtualCables
+        );
+        setAudioUnlocked(audioEngine.isAudioUnlocked());
+        setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
+        logEvent({
+          family: 'soundcheck',
+          severity: 'info',
+          service: 'VirtualSoundcheck',
+          message: `Mounted recorded multitrack session (${res.loadedCount} WAV stems, ${res.durationSec.toFixed(1)}s) into console channels.`,
+        });
+        return { ok: true, ...res };
+      } catch (err) {
+        return {
+          ok: false,
+          loadedCount: 0,
+          durationSec: 0,
+          error: err instanceof Error ? err.message : 'Failed to mount recorded session.',
+        };
+      }
+    },
+    [multitrackSessions, logEvent]
+  );
+
+  const toggleVirtualSoundcheckPlay = useCallback(() => {
+    const st = audioEngine.getVirtualSoundcheckStatus();
+    if (st.playing) {
+      audioEngine.pauseVirtualSoundcheck();
+    } else {
+      audioEngine.startVirtualSoundcheck();
+    }
+    setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
+  }, []);
+
+  const stopVirtualSoundcheck = useCallback(() => {
+    audioEngine.stopVirtualSoundcheck();
+    setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
+  }, []);
+
+  const setVirtualSoundcheckLoop = useCallback((loop: boolean) => {
+    audioEngine.setVirtualSoundcheckLoop(loop);
+    setVirtualSoundcheckStatus(audioEngine.getVirtualSoundcheckStatus());
   }, []);
 
   const toggleTalkback = useCallback(() => {
@@ -2660,6 +3933,173 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     }
     setTalkbackActive((prev) => !prev);
   }, [hardwareProfile, logEvent]);
+
+  // Parameter Automation Controls & Lane CRUD
+  const toggleAutomationPlay = useCallback(() => {
+    setAutomationTransport((prev) => ({
+      ...prev,
+      playing: !prev.playing,
+      recording: !prev.playing ? prev.recording : false,
+    }));
+  }, []);
+
+  const stopAndRewindAutomation = useCallback(() => {
+    setAutomationTransport((prev) => ({
+      ...prev,
+      playing: false,
+      recording: false,
+      playheadSec: 0,
+    }));
+    applyAutomationAtTime(0);
+  }, [applyAutomationAtTime]);
+
+  const setAutomationPlayhead = useCallback(
+    (sec: number) => {
+      const dur = stateRef.current.automationTransport.durationSec;
+      const clamped = Math.max(0, Math.min(dur, Number(sec.toFixed(2))));
+      setAutomationTransport((prev) => ({ ...prev, playheadSec: clamped }));
+      applyAutomationAtTime(clamped);
+    },
+    [applyAutomationAtTime]
+  );
+
+  const setAutomationMode = useCallback((mode: AutomationMode) => {
+    setAutomationTransport((prev) => ({
+      ...prev,
+      mode,
+      recording: mode === 'off' || mode === 'read' ? false : prev.recording,
+    }));
+  }, []);
+
+  const toggleAutomationRecord = useCallback(() => {
+    setAutomationTransport((prev) => {
+      const nextRec = !prev.recording;
+      const nextMode: AutomationMode =
+        nextRec && (prev.mode === 'off' || prev.mode === 'read') ? 'write' : prev.mode;
+      return {
+        ...prev,
+        recording: nextRec,
+        mode: nextMode,
+        playing: nextRec ? true : prev.playing,
+      };
+    });
+  }, []);
+
+  const setAutomationDuration = useCallback((durationSec: number) => {
+    const clampedDur = Math.max(10, Math.min(600, Math.round(durationSec)));
+    setAutomationTransport((prev) => ({
+      ...prev,
+      durationSec: clampedDur,
+      playheadSec: Math.min(prev.playheadSec, clampedDur),
+    }));
+  }, []);
+
+  const toggleAutomationLoop = useCallback(() => {
+    setAutomationTransport((prev) => ({ ...prev, loop: !prev.loop }));
+  }, []);
+
+  const ensureAutomationLane = useCallback(
+    (channelId: string, parameter: AutomationParameterKey): AutomationLane => {
+      const existing = stateRef.current.automationLanes.find(
+        (l) => l.channelId === channelId && l.parameter === parameter
+      );
+      if (existing) return existing;
+      const ch = stateRef.current.channels.find((c) => c.id === channelId);
+      const startVal = ch
+        ? clampAutomationValue(parameter, readChannelAutomationParam(ch, parameter))
+        : 0;
+      const created: AutomationLane = {
+        id: `auto-${channelId}-${parameter}-${Date.now().toString(36)}`,
+        channelId,
+        parameter,
+        enabled: true,
+        points: [
+          {
+            id: `pt-${Date.now().toString(36)}-init`,
+            timeSec: 0,
+            value: startVal,
+          },
+        ],
+      };
+      setAutomationLanes((prev) => [...prev, created]);
+      return created;
+    },
+    []
+  );
+
+  const toggleAutomationLaneEnabled = useCallback((laneId: string) => {
+    setAutomationLanes((prev) =>
+      prev.map((l) => (l.id === laneId ? { ...l, enabled: !l.enabled } : l))
+    );
+  }, []);
+
+  const removeAutomationLane = useCallback((laneId: string) => {
+    setAutomationLanes((prev) => prev.filter((l) => l.id !== laneId));
+  }, []);
+
+  const clearAutomationLanePoints = useCallback((laneId: string) => {
+    setAutomationLanes((prev) =>
+      prev.map((l) => (l.id === laneId ? { ...l, points: [] } : l))
+    );
+  }, []);
+
+  const upsertAutomationPoint = useCallback(
+    (laneId: string, timeSec: number, value: number, replacePointId?: string) => {
+      const dur = stateRef.current.automationTransport.durationSec;
+      const clampedT = Math.max(0, Math.min(dur, Math.round(timeSec * 20) / 20));
+      setAutomationLanes((prev) =>
+        prev.map((lane) => {
+          if (lane.id !== laneId) return lane;
+          const clampedV = clampAutomationValue(lane.parameter, value);
+          if (replacePointId) {
+            const nextPts = lane.points
+              .map((p) =>
+                p.id === replacePointId ? { ...p, timeSec: clampedT, value: clampedV } : p
+              )
+              .sort((a, b) => a.timeSec - b.timeSec);
+            return { ...lane, points: nextPts };
+          }
+          const nearIdx = lane.points.findIndex((p) => Math.abs(p.timeSec - clampedT) < 0.08);
+          const nextPts =
+            nearIdx >= 0
+              ? lane.points.map((p, idx) =>
+                  idx === nearIdx ? { ...p, timeSec: clampedT, value: clampedV } : p
+                )
+              : [
+                  ...lane.points,
+                  {
+                    id: `pt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                    timeSec: clampedT,
+                    value: clampedV,
+                  },
+                ].sort((a, b) => a.timeSec - b.timeSec);
+          return { ...lane, points: nextPts };
+        })
+      );
+    },
+    []
+  );
+
+  const removeAutomationPoint = useCallback((laneId: string, pointId: string) => {
+    setAutomationLanes((prev) =>
+      prev.map((lane) =>
+        lane.id === laneId
+          ? { ...lane, points: lane.points.filter((p) => p.id !== pointId) }
+          : lane
+      )
+    );
+  }, []);
+
+  const captureAutomationSnapshotPoint = useCallback(
+    (channelId: string, parameter: AutomationParameterKey) => {
+      const ch = stateRef.current.channels.find((c) => c.id === channelId);
+      if (!ch) return;
+      const lane = ensureAutomationLane(channelId, parameter);
+      const val = readChannelAutomationParam(ch, parameter);
+      upsertAutomationPoint(lane.id, stateRef.current.automationTransport.playheadSec, val);
+    },
+    [ensureAutomationLane, upsertAutomationPoint]
+  );
 
   const undo = useCallback(() => {
     setUndoStack((prev) => {
@@ -2979,9 +4419,40 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     resetPeakHold,
     recordingActive,
     recordingDurationSec,
+    recordingTargetId,
+    setRecordingTargetId,
+    recordedTakes,
+    deleteRecordedTake,
     lastRecordingUrl,
     lastRecordingFilename,
     toggleStreamRecording,
+    multitrackArmedIds,
+    multitrackTapPoint,
+    setMultitrackTapPoint,
+    multitrackBitDepth,
+    setMultitrackBitDepth,
+    multitrackRecording,
+    multitrackSessions,
+    toggleMultitrackArm,
+    armMultitrackPreset,
+    toggleMultitrackRecording,
+    deleteMultitrackSession,
+    automationLanes,
+    automationTransport,
+    toggleAutomationPlay,
+    stopAndRewindAutomation,
+    setAutomationPlayhead,
+    setAutomationMode,
+    toggleAutomationRecord,
+    setAutomationDuration,
+    toggleAutomationLoop,
+    ensureAutomationLane,
+    toggleAutomationLaneEnabled,
+    removeAutomationLane,
+    clearAutomationLanePoints,
+    upsertAutomationPoint,
+    removeAutomationPoint,
+    captureAutomationSnapshotPoint,
     virtualCables,
     addVirtualCable,
     updateVirtualCable,
@@ -3064,6 +4535,32 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     redo,
     traceSignalJourney,
     logEvent,
+    connectedSeats,
+    wsConnected,
+    operatorRole,
+    setOperatorRole,
+    highVisibilityMode,
+    setHighVisibilityMode,
+    midiConnectedDevices,
+    midiLastMessage,
+    dcaGroups,
+    updateDcaGroup,
+    activeDcaSpill,
+    setActiveDcaSpill,
+    soloMode,
+    setSoloMode,
+    fxRack,
+    updateFxSlot,
+    matrixZones,
+    updateMatrixZone,
+    updateMatrixZoneSource,
+    broadcastLoudness,
+    virtualSoundcheckStatus,
+    loadVirtualSoundcheckFiles,
+    mountMultitrackSessionForSoundcheck,
+    toggleVirtualSoundcheckPlay,
+    stopVirtualSoundcheck,
+    setVirtualSoundcheckLoop,
   };
 
   return <AudioConsoleContext.Provider value={value}>{children}</AudioConsoleContext.Provider>;

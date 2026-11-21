@@ -1,14 +1,25 @@
 import type {
   AudioSourceBinding,
+  BroadcastLoudnessMetrics,
   BusNode,
   ChannelStrip,
   CrossoverFamily,
+  DcaGroupState,
   DetectedHardwareDevice,
   EqBand,
+  FxSlotState,
+  MatrixZone,
   MeterReading,
+  MultitrackRecordedFile,
+  MultitrackSession,
+  MultitrackTapPoint,
+  MultitrackWaveformSlice,
+  SoloMode,
   SpeakerBand,
   VirtualCableNode,
   VirtualDiState,
+  VirtualSoundcheckTrack,
+  WavBitDepth,
 } from './types';
 import {
   analyzeChannelSpectrumFft,
@@ -184,20 +195,33 @@ interface ChannelAudioNodes {
   preAnalyser: AnalyserNode;
   trimGain: GainNode;
   autoGain: GainNode;
+  gateGain: GainNode;
   polarityGain: GainNode;
   delayNode: DelayNode;
   hpf: BiquadFilterNode;
   eqFilters: BiquadFilterNode[];
   eqFilterCount: number;
   geqFilters: BiquadFilterNode[];
+  deEsserFilter: BiquadFilterNode;
+  sidechainHpf: BiquadFilterNode;
+  sidechainAnalyser: AnalyserNode;
   comp: DynamicsCompressorNode;
+  parallelDryGain: GainNode;
+  parallelWetGain: GainNode;
+  parallelSumGain: GainNode;
   faderGain: GainNode;
   panner: StereoPannerNode;
   postAnalyser: AnalyserNode;
+  meterWorkletNode?: AudioWorkletNode;
+  soloTapGain?: GainNode;
+  soloTapPreFader?: boolean;
   sendGains: Map<string, { gain: GainNode; preFader: boolean }>;
   preTimeDomain: Float32Array<ArrayBuffer>;
   preFreqData: Float32Array<ArrayBuffer>;
   postTimeDomain: Float32Array<ArrayBuffer>;
+  sidechainTimeDomain: Float32Array<ArrayBuffer>;
+  gateEnvelopeGain: number;
+  gateHoldUntilMs: number;
 }
 
 interface BusAudioNodes {
@@ -207,7 +231,38 @@ interface BusAudioNodes {
   limiter: DynamicsCompressorNode;
   faderGain: GainNode;
   analyser: AnalyserNode;
+  kWeightShelf?: BiquadFilterNode;
+  kWeightHpf?: BiquadFilterNode;
+  kWeightAnalyser?: AnalyserNode;
+  kWeightTimeDomain?: Float32Array<ArrayBuffer>;
   streamDest: MediaStreamAudioDestinationNode;
+  timeDomain: Float32Array<ArrayBuffer>;
+}
+
+interface FxSlotAudioNodes {
+  slotId: string;
+  type: FxSlotState['type'];
+  inputBusId: string;
+  inputTap: GainNode;
+  preDelay: DelayNode;
+  convolver?: ConvolverNode;
+  delayNode?: DelayNode;
+  feedbackGain?: GainNode;
+  dampingFilter: BiquadFilterNode;
+  lfoOsc?: OscillatorNode;
+  lfoDepthGain?: GainNode;
+  returnGain: GainNode;
+  decaySignature: string;
+}
+
+interface MatrixAudioNodes {
+  zoneId: string;
+  sumGain: GainNode;
+  sourceTaps: Map<string, GainNode>;
+  delayNode: DelayNode;
+  masterGain: GainNode;
+  limiter: DynamicsCompressorNode;
+  analyser: AnalyserNode;
   timeDomain: Float32Array<ArrayBuffer>;
 }
 
@@ -333,12 +388,48 @@ function detectFundamentalFromFft(freqData: Float32Array<ArrayBuffer>, sampleRat
   return Math.round((interpIdx / binCount) * nyquist);
 }
 
+function compute4xTruePeakLinear(samples: Float32Array): number {
+  let maxPeak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const abs = Math.abs(samples[i]);
+    if (abs > maxPeak) maxPeak = abs;
+    if (i >= 1 && i < samples.length - 2) {
+      const y0 = samples[i - 1];
+      const y1 = samples[i];
+      const y2 = samples[i + 1];
+      const y3 = samples[i + 2];
+      // Catmull-Rom 4x oversampling at t = 0.25, 0.5, 0.75
+      for (let sub = 1; sub <= 3; sub++) {
+        const t = sub * 0.25;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const interp =
+          0.5 *
+          (2 * y1 +
+            (-y0 + y2) * t +
+            (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 +
+            (-y0 + 3 * y1 - 3 * y2 + y3) * t3);
+        const absInterp = Math.abs(interp);
+        if (absInterp > maxPeak) maxPeak = absInterp;
+      }
+    }
+  }
+  return maxPeak;
+}
+
 class RealTimeConsoleAudioEngine {
   private ctx: AudioContext | null = null;
   private masterMonitorSum: GainNode | null = null;
   private masterAnalyser: AnalyserNode | null = null;
+  private masterStreamDest: MediaStreamAudioDestinationNode | null = null;
   private masterFreqData: Float32Array<ArrayBuffer> | null = null;
   private masterTimeData: Float32Array<ArrayBuffer> | null = null;
+  private soloCueSum: GainNode | null = null;
+  private workletSilentSink: GainNode | null = null;
+  private meterWorkletLoaded = false;
+  private meterWorkletLoading = false;
+  private workletMeterCache = new Map<string, { peakDbfs: number; rmsDbfs: number }>();
+  private stateRecoveryListeners = new Set<(state: string) => void>();
 
   private testOsc: OscillatorNode | null = null;
   private testNoise: AudioBufferSourceNode | null = null;
@@ -349,6 +440,8 @@ class RealTimeConsoleAudioEngine {
   private busNodes = new Map<string, BusAudioNodes>();
   private speakerNodes = new Map<string, SpeakerAudioNodes>();
   private virtualCableNodes = new Map<string, VirtualCableAudioNodes>();
+  private fxNodes = new Map<string, FxSlotAudioNodes>();
+  private matrixNodes = new Map<string, MatrixAudioNodes>();
 
   private peakHolds = new Map<string, { value: number; clipped: boolean }>();
   private noiseFloorMap = new Map<string, number>();
@@ -358,11 +451,56 @@ class RealTimeConsoleAudioEngine {
   private spectrumBins = new Float32Array(64);
   private roomSpectrumBins = new Float32Array(64);
 
+  // ITU-R BS.1770-4 Broadcast loudness ring buffers
+  private lufsWindowEnergies: number[] = [];
+  private lufsIntegratedPowers: number[] = [];
+
+  // Virtual Soundcheck Multi-Track Playback State
+  private soundcheckBuffers = new Map<string, { track: VirtualSoundcheckTrack; buffer: AudioBuffer }>();
+  private soundcheckActiveSources = new Map<string, AudioBufferSourceNode>();
+  private soundcheckState: {
+    playing: boolean;
+    loop: boolean;
+    startedCtxTime: number;
+    offsetSec: number;
+    durationSec: number;
+  } = {
+    playing: false,
+    loop: true,
+    startedCtxTime: 0,
+    offsetSec: 0,
+    durationSec: 0,
+  };
+
   private activeRecorder: {
     recorder: MediaRecorder;
     chunks: Blob[];
     targetId: string;
     startedAt: number;
+  } | null = null;
+
+  private multitrackWorkletLoaded = false;
+  private activeMultitrack: {
+    tapPoint: MultitrackTapPoint;
+    bitDepth: WavBitDepth;
+    sampleRateHz: number;
+    startedAt: number;
+    silentSink: GainNode;
+    tracks: Map<
+      string,
+      {
+        channel: ChannelStrip;
+        sourceTap: AudioNode;
+        processorNode: AudioNode;
+        chunks: Float32Array[];
+        totalSamples: number;
+        peakLinear: number;
+        bucketSamples: number;
+        bucketPeak: number;
+        bucketClipped: boolean;
+        waveform: MultitrackWaveformSlice[];
+      }
+    >;
   } | null = null;
 
   public isAudioUnlocked(): boolean {
@@ -433,13 +571,108 @@ class RealTimeConsoleAudioEngine {
     return true;
   }
 
+  public subscribeAudioRecovery(listener: (state: string) => void): () => void {
+    this.stateRecoveryListeners.add(listener);
+    return () => {
+      this.stateRecoveryListeners.delete(listener);
+    };
+  }
+
+  private async ensureMeterWorklet(): Promise<boolean> {
+    if (!this.ctx) return false;
+    if (this.meterWorkletLoaded) return true;
+    if (this.meterWorkletLoading) return false;
+    if (!this.ctx.audioWorklet || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+      return false;
+    }
+    this.meterWorkletLoading = true;
+    try {
+      const processorCode = `
+        class ConsoleMeterWorklet extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            this._accPeak = 0;
+            this._accSq = 0;
+            this._samples = 0;
+          }
+          process(inputs) {
+            const input = inputs[0];
+            if (input && input[0]) {
+              const ch = input[0];
+              for (let i = 0; i < ch.length; i++) {
+                const s = ch[i];
+                const a = s < 0 ? -s : s;
+                if (a > this._accPeak) this._accPeak = a;
+                this._accSq += s * s;
+              }
+              this._samples += ch.length;
+              if (this._samples >= 1024) {
+                const rms = Math.sqrt(this._accSq / this._samples);
+                this.port.postMessage({ peak: this._accPeak, rms });
+                this._accPeak = 0;
+                this._accSq = 0;
+                this._samples = 0;
+              }
+            }
+            return true;
+          }
+        }
+        registerProcessor('console-meter-worklet', ConsoleMeterWorklet);
+      `;
+      const blob = new Blob([processorCode], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      try {
+        await this.ctx.audioWorklet.addModule(url);
+        this.meterWorkletLoaded = true;
+        for (const [chId, nodes] of this.channelNodes.entries()) {
+          this.attachMeterWorkletToChannel(chId, nodes);
+        }
+        return true;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch {
+      return false;
+    } finally {
+      this.meterWorkletLoading = false;
+    }
+  }
+
+  private attachMeterWorkletToChannel(channelId: string, nodes: ChannelAudioNodes): void {
+    if (!this.ctx || !this.meterWorkletLoaded || !this.workletSilentSink || nodes.meterWorkletNode) return;
+    try {
+      const node = new AudioWorkletNode(this.ctx, 'console-meter-worklet', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      node.port.onmessage = (ev) => {
+        const data = ev.data as { peak?: number; rms?: number } | undefined;
+        if (!data || typeof data.peak !== 'number' || typeof data.rms !== 'number') return;
+        this.workletMeterCache.set(channelId, {
+          peakDbfs: gainToDb(data.peak),
+          rmsDbfs: gainToDb(data.rms),
+        });
+      };
+      nodes.postAnalyser.connect(node);
+      node.connect(this.workletSilentSink);
+      nodes.meterWorkletNode = node;
+    } catch {
+      // Fallback to AnalyserNode polling if worklet node fails
+    }
+  }
+
   public async unlockAndStart(
     channels: ChannelStrip[],
     buses: BusNode[],
     speakers?: SpeakerBand[],
     virtualCables?: VirtualCableNode[],
     virtualDi?: VirtualDiState,
-    globalDspBypass = false
+    globalDspBypass = false,
+    dcaGroups: DcaGroupState[] = [],
+    fxRack: FxSlotState[] = [],
+    matrixZones: MatrixZone[] = [],
+    soloMode: SoloMode = 'afl'
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     if (!this.ctx) {
@@ -451,6 +684,13 @@ class RealTimeConsoleAudioEngine {
       this.masterMonitorSum = this.ctx.createGain();
       this.masterMonitorSum.gain.value = 1.0;
 
+      this.soloCueSum = this.ctx.createGain();
+      this.soloCueSum.gain.value = 0.0;
+
+      this.workletSilentSink = this.ctx.createGain();
+      this.workletSilentSink.gain.value = 0.0;
+      this.workletSilentSink.connect(this.ctx.destination);
+
       this.masterAnalyser = this.ctx.createAnalyser();
       this.masterAnalyser.fftSize = 2048;
       this.masterAnalyser.smoothingTimeConstant = 0.72;
@@ -458,13 +698,37 @@ class RealTimeConsoleAudioEngine {
       this.masterTimeData = new Float32Array(new ArrayBuffer(this.masterAnalyser.fftSize * 4));
 
       this.masterMonitorSum.connect(this.masterAnalyser);
+      this.soloCueSum.connect(this.masterAnalyser);
+      this.masterStreamDest = this.ctx.createMediaStreamDestination();
+      this.masterAnalyser.connect(this.masterStreamDest);
       this.masterAnalyser.connect(this.ctx.destination);
+
+      this.ctx.onstatechange = () => {
+        const state = this.ctx?.state ?? 'closed';
+        this.stateRecoveryListeners.forEach((fn) => fn(state));
+        if (state === 'suspended') {
+          void this.ctx?.resume().catch(() => {});
+        }
+      };
+
+      void this.ensureMeterWorklet();
     }
 
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
-    this.syncGraph(channels, buses, virtualDi, speakers ?? [], virtualCables ?? [], globalDspBypass);
+    this.syncGraph(
+      channels,
+      buses,
+      virtualDi,
+      speakers ?? [],
+      virtualCables ?? [],
+      globalDspBypass,
+      dcaGroups,
+      fxRack,
+      matrixZones,
+      soloMode
+    );
     return this.ctx.state === 'running';
   }
 
@@ -522,6 +786,32 @@ class RealTimeConsoleAudioEngine {
     faderGain.connect(analyser);
     analyser.connect(streamDest);
 
+    // ITU-R BS.1770-4 K-Weighting Filter Chain for Broadcast Stream Bus
+    let kWeightShelf: BiquadFilterNode | undefined;
+    let kWeightHpf: BiquadFilterNode | undefined;
+    let kWeightAnalyser: AnalyserNode | undefined;
+    let kWeightTimeDomain: Float32Array<ArrayBuffer> | undefined;
+    if (bus.id === 'bus-stream' || bus.kind === 'broadcast') {
+      kWeightShelf = ctx.createBiquadFilter();
+      kWeightShelf.type = 'highshelf';
+      kWeightShelf.frequency.value = 1500;
+      kWeightShelf.gain.value = 4.0;
+      kWeightShelf.Q.value = 0.707;
+
+      kWeightHpf = ctx.createBiquadFilter();
+      kWeightHpf.type = 'highpass';
+      kWeightHpf.frequency.value = 38;
+      kWeightHpf.Q.value = 0.5;
+
+      kWeightAnalyser = ctx.createAnalyser();
+      kWeightAnalyser.fftSize = 2048;
+      kWeightTimeDomain = new Float32Array(new ArrayBuffer(kWeightAnalyser.fftSize * 4));
+
+      analyser.connect(kWeightShelf);
+      kWeightShelf.connect(kWeightHpf);
+      kWeightHpf.connect(kWeightAnalyser);
+    }
+
     const nodes: BusAudioNodes = {
       sumGain,
       eqFilters,
@@ -529,6 +819,10 @@ class RealTimeConsoleAudioEngine {
       limiter,
       faderGain,
       analyser,
+      kWeightShelf,
+      kWeightHpf,
+      kWeightAnalyser,
+      kWeightTimeDomain,
       streamDest,
       timeDomain: new Float32Array(new ArrayBuffer(analyser.fftSize * 4)),
     };
@@ -577,6 +871,9 @@ class RealTimeConsoleAudioEngine {
     const autoGain = ctx.createGain();
     autoGain.gain.value = 1.0;
 
+    const gateGain = ctx.createGain();
+    gateGain.gain.value = 1.0;
+
     const polarityGain = ctx.createGain();
     polarityGain.gain.value = ch.polarityInvert ? -1 : 1;
 
@@ -605,9 +902,31 @@ class RealTimeConsoleAudioEngine {
       return f;
     });
 
+    const deEsserFilter = ctx.createBiquadFilter();
+    deEsserFilter.type = 'peaking';
+    deEsserFilter.frequency.value = ch.dynamics.deEsserFreqHz ?? 6500;
+    deEsserFilter.Q.value = 2.8;
+    deEsserFilter.gain.value = 0;
+
+    const sidechainHpf = ctx.createBiquadFilter();
+    sidechainHpf.type = 'highpass';
+    sidechainHpf.frequency.value = ch.dynamics.sidechainHpfHz ?? 120;
+
+    const sidechainAnalyser = ctx.createAnalyser();
+    sidechainAnalyser.fftSize = 256;
+
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = ch.dynamics.compEnabled ? ch.dynamics.compThresholdDb : 0;
     comp.ratio.value = ch.dynamics.compEnabled ? ch.dynamics.compRatio : 1;
+
+    const parallelDryGain = ctx.createGain();
+    const parallelWetGain = ctx.createGain();
+    const wetRatio = Math.max(0, Math.min(1, (ch.dynamics.parallelMixPct ?? 100) / 100));
+    parallelDryGain.gain.value = 1 - wetRatio;
+    parallelWetGain.gain.value = wetRatio;
+
+    const parallelSumGain = ctx.createGain();
+    parallelSumGain.gain.value = 1.0;
 
     const faderGain = ctx.createGain();
     faderGain.gain.value = ch.mute ? 0 : dbToGain(ch.faderDb);
@@ -621,7 +940,8 @@ class RealTimeConsoleAudioEngine {
     inputSumGain.connect(preAnalyser);
     preAnalyser.connect(trimGain);
     trimGain.connect(autoGain);
-    autoGain.connect(polarityGain);
+    autoGain.connect(gateGain);
+    gateGain.connect(polarityGain);
     polarityGain.connect(delayNode);
     delayNode.connect(hpf);
 
@@ -634,8 +954,19 @@ class RealTimeConsoleAudioEngine {
       prev.connect(geq);
       prev = geq;
     }
-    prev.connect(comp);
-    comp.connect(faderGain);
+    prev.connect(deEsserFilter);
+
+    // Sidechain key tap + Parallel Compression Dry/Wet split
+    deEsserFilter.connect(sidechainHpf);
+    sidechainHpf.connect(sidechainAnalyser);
+
+    deEsserFilter.connect(parallelDryGain);
+    deEsserFilter.connect(comp);
+    comp.connect(parallelWetGain);
+    parallelDryGain.connect(parallelSumGain);
+    parallelWetGain.connect(parallelSumGain);
+
+    parallelSumGain.connect(faderGain);
     faderGain.connect(panner);
     panner.connect(postAnalyser);
 
@@ -644,13 +975,20 @@ class RealTimeConsoleAudioEngine {
       preAnalyser,
       trimGain,
       autoGain,
+      gateGain,
       polarityGain,
       delayNode,
       hpf,
       eqFilters,
       eqFilterCount: eqFilters.length,
       geqFilters,
+      deEsserFilter,
+      sidechainHpf,
+      sidechainAnalyser,
       comp,
+      parallelDryGain,
+      parallelWetGain,
+      parallelSumGain,
       faderGain,
       panner,
       postAnalyser,
@@ -658,8 +996,12 @@ class RealTimeConsoleAudioEngine {
       preTimeDomain: new Float32Array(new ArrayBuffer(preAnalyser.fftSize * 4)),
       preFreqData: new Float32Array(new ArrayBuffer(preAnalyser.frequencyBinCount * 4)),
       postTimeDomain: new Float32Array(new ArrayBuffer(postAnalyser.fftSize * 4)),
+      sidechainTimeDomain: new Float32Array(new ArrayBuffer(sidechainAnalyser.fftSize * 4)),
+      gateEnvelopeGain: 1,
+      gateHoldUntilMs: 0,
     };
     this.channelNodes.set(ch.id, nodes);
+    this.attachMeterWorkletToChannel(ch.id, nodes);
     return nodes;
   }
 
@@ -688,7 +1030,7 @@ class RealTimeConsoleAudioEngine {
     if (nodes.geqFilters.length > 0) {
       prev.connect(nodes.geqFilters[0]);
     } else {
-      prev.connect(nodes.comp);
+      prev.connect(nodes.deEsserFilter);
     }
   }
 
@@ -1429,12 +1771,10 @@ class RealTimeConsoleAudioEngine {
     }
   }
 
-  public startBusRecording(busId = 'bus-stream'): { ok: boolean; mimeType?: string; error?: string } {
+  public startBusRecording(targetId = 'system-master'): { ok: boolean; mimeType?: string; error?: string } {
     if (!this.ctx || this.ctx.state !== 'running') {
       return { ok: false, error: 'Engage Audio DSP Engine before recording.' };
     }
-    const bus = this.busNodes.get(busId) ?? this.busNodes.get('bus-main');
-    if (!bus) return { ok: false, error: 'Target broadcast bus unavailable.' };
     if (typeof MediaRecorder === 'undefined') {
       return { ok: false, error: 'MediaRecorder API is not supported in this browser.' };
     }
@@ -1442,11 +1782,22 @@ class RealTimeConsoleAudioEngine {
       return { ok: false, error: 'Recording already in progress.' };
     }
 
+    let sourceStream: MediaStream | null = null;
+    if (targetId === 'system-master') {
+      sourceStream = this.masterStreamDest?.stream ?? null;
+    } else {
+      const bus = this.busNodes.get(targetId) ?? this.busNodes.get('bus-main');
+      sourceStream = bus?.streamDest.stream ?? null;
+    }
+    if (!sourceStream) {
+      return { ok: false, error: 'Target recording output bus unavailable.' };
+    }
+
     const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
     const mimeType = preferredTypes.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
     const recorder = mimeType
-      ? new MediaRecorder(bus.streamDest.stream, { mimeType })
-      : new MediaRecorder(bus.streamDest.stream);
+      ? new MediaRecorder(sourceStream, { mimeType })
+      : new MediaRecorder(sourceStream);
 
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => {
@@ -1456,13 +1807,20 @@ class RealTimeConsoleAudioEngine {
     this.activeRecorder = {
       recorder,
       chunks,
-      targetId: busId,
+      targetId,
       startedAt: Date.now(),
     };
     return { ok: true, mimeType: recorder.mimeType || 'audio/webm' };
   }
 
-  public async stopBusRecording(): Promise<{ blobUrl: string; filename: string; durationSec: number } | null> {
+  public async stopBusRecording(): Promise<{
+    blobUrl: string;
+    filename: string;
+    durationSec: number;
+    sizeBytes: number;
+    mimeType: string;
+    targetId: string;
+  } | null> {
     const rec = this.activeRecorder;
     if (!rec) return null;
     this.activeRecorder = null;
@@ -1476,15 +1834,585 @@ class RealTimeConsoleAudioEngine {
       }
     });
 
-    const blob = new Blob(rec.chunks, { type: rec.recorder.mimeType || 'audio/webm' });
+    const resolvedMime = rec.recorder.mimeType || 'audio/webm';
+    const blob = new Blob(rec.chunks, { type: resolvedMime });
     const blobUrl = URL.createObjectURL(blob);
-    const ext = rec.recorder.mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const ext = resolvedMime.includes('ogg') ? 'ogg' : 'webm';
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const prefix = rec.targetId === 'system-master' ? 'system-output' : `console-${rec.targetId}`;
     return {
       blobUrl,
-      filename: `console-${rec.targetId}-${stamp}.${ext}`,
+      filename: `${prefix}-${stamp}.${ext}`,
       durationSec: Math.max(1, Math.round((Date.now() - rec.startedAt) / 1000)),
+      sizeBytes: blob.size,
+      mimeType: resolvedMime,
+      targetId: rec.targetId,
     };
+  }
+
+  private async ensureMultitrackWorklet(): Promise<boolean> {
+    if (!this.ctx) return false;
+    if (this.multitrackWorkletLoaded) return true;
+    if (!this.ctx.audioWorklet || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+      return false;
+    }
+    try {
+      const processorCode = `
+        class MultitrackTapProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const input = inputs[0];
+            if (input && input[0] && input[0].length > 0) {
+              const copy = new Float32Array(input[0]);
+              this.port.postMessage(copy, [copy.buffer]);
+            }
+            return true;
+          }
+        }
+        registerProcessor('multitrack-tap-processor', MultitrackTapProcessor);
+      `;
+      const blob = new Blob([processorCode], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      try {
+        await this.ctx.audioWorklet.addModule(url);
+        this.multitrackWorkletLoaded = true;
+        return true;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  private encodeMonoPcmWavBlob(
+    chunks: Float32Array[],
+    sampleRateHz: number,
+    bitDepth: WavBitDepth
+  ): Blob {
+    const totalSamples = chunks.reduce((sum, c) => sum + c.length, 0);
+    const bytesPerSample = bitDepth === 24 ? 3 : 2;
+    const dataByteLength = totalSamples * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataByteLength);
+    const view = new DataView(buffer);
+
+    const writeAscii = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeAscii(0, 'RIFF');
+    view.setUint32(4, 36 + dataByteLength, true);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM chunk size
+    view.setUint16(20, 1, true); // AudioFormat = 1 (PCM)
+    view.setUint16(22, 1, true); // NumChannels = 1 (Mono discrete track WAV)
+    view.setUint32(24, sampleRateHz, true);
+    view.setUint32(28, sampleRateHz * bytesPerSample, true); // ByteRate
+    view.setUint16(32, bytesPerSample, true); // BlockAlign
+    view.setUint16(34, bitDepth, true);
+    writeAscii(36, 'data');
+    view.setUint32(40, dataByteLength, true);
+
+    let byteOffset = 44;
+    if (bitDepth === 24) {
+      for (const chunk of chunks) {
+        for (let i = 0; i < chunk.length; i++) {
+          const s = Math.max(-1, Math.min(1, chunk[i]));
+          const intVal = s < 0 ? Math.round(s * 8388608) : Math.round(s * 8388607);
+          view.setUint8(byteOffset, intVal & 0xff);
+          view.setUint8(byteOffset + 1, (intVal >> 8) & 0xff);
+          view.setUint8(byteOffset + 2, (intVal >> 16) & 0xff);
+          byteOffset += 3;
+        }
+      }
+    } else {
+      for (const chunk of chunks) {
+        for (let i = 0; i < chunk.length; i++) {
+          const s = Math.max(-1, Math.min(1, chunk[i]));
+          const intVal = s < 0 ? Math.round(s * 32768) : Math.round(s * 32767);
+          view.setInt16(byteOffset, intVal, true);
+          byteOffset += 2;
+        }
+      }
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  public async startMultitrackRecording(
+    channelsToRecord: ChannelStrip[],
+    tapPoint: MultitrackTapPoint = 'pre-dsp',
+    bitDepth: WavBitDepth = 24
+  ): Promise<{ ok: boolean; error?: string; sampleRateHz?: number }> {
+    if (!this.ctx || this.ctx.state !== 'running') {
+      return { ok: false, error: 'Engage Audio DSP Engine before starting multitrack WAV capture.' };
+    }
+    if (this.activeMultitrack) {
+      return { ok: false, error: 'Multitrack capture already in progress.' };
+    }
+    if (channelsToRecord.length === 0) {
+      return { ok: false, error: 'Arm at least one input channel to record multitrack WAV files.' };
+    }
+
+    const useWorklet = await this.ensureMultitrackWorklet();
+    const ctx = this.ctx;
+    const sampleRateHz = ctx.sampleRate;
+    const sliceSamplesTarget = Math.max(1024, Math.round(sampleRateHz * 0.1));
+
+    const silentSink = ctx.createGain();
+    silentSink.gain.value = 0;
+    silentSink.connect(ctx.destination);
+
+    const tracks = new Map<
+      string,
+      {
+        channel: ChannelStrip;
+        sourceTap: AudioNode;
+        processorNode: AudioNode;
+        chunks: Float32Array[];
+        totalSamples: number;
+        peakLinear: number;
+        bucketSamples: number;
+        bucketPeak: number;
+        bucketClipped: boolean;
+        waveform: MultitrackWaveformSlice[];
+      }
+    >();
+
+    for (const ch of channelsToRecord) {
+      const chNodes = this.channelNodes.get(ch.id);
+      if (!chNodes) continue;
+      const sourceTap: AudioNode = tapPoint === 'pre-dsp' ? chNodes.preAnalyser : chNodes.postAnalyser;
+
+      const trackEntry = {
+        channel: ch,
+        sourceTap,
+        processorNode: silentSink as AudioNode,
+        chunks: [] as Float32Array[],
+        totalSamples: 0,
+        peakLinear: 0,
+        bucketSamples: 0,
+        bucketPeak: 0,
+        bucketClipped: false,
+        waveform: [] as MultitrackWaveformSlice[],
+      };
+
+      const ingestSamples = (samples: Float32Array) => {
+        trackEntry.chunks.push(samples);
+        let localPeak = 0;
+        let localClipped = false;
+        for (let i = 0; i < samples.length; i++) {
+          const abs = Math.abs(samples[i]);
+          if (abs > localPeak) localPeak = abs;
+          if (abs >= 0.99) localClipped = true;
+        }
+        if (localPeak > trackEntry.peakLinear) trackEntry.peakLinear = localPeak;
+        trackEntry.totalSamples += samples.length;
+        trackEntry.bucketSamples += samples.length;
+        if (localPeak > trackEntry.bucketPeak) trackEntry.bucketPeak = localPeak;
+        if (localClipped) trackEntry.bucketClipped = true;
+
+        if (trackEntry.bucketSamples >= sliceSamplesTarget) {
+          trackEntry.waveform.push({
+            timeSec: Number((trackEntry.totalSamples / sampleRateHz).toFixed(2)),
+            peak: Number(Math.min(1, trackEntry.bucketPeak).toFixed(4)),
+            clipped: trackEntry.bucketClipped,
+          });
+          trackEntry.bucketSamples = 0;
+          trackEntry.bucketPeak = 0;
+          trackEntry.bucketClipped = false;
+        }
+      };
+
+      if (useWorklet) {
+        const workletNode = new AudioWorkletNode(ctx, 'multitrack-tap-processor', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        workletNode.port.onmessage = (ev) => {
+          if (ev.data instanceof Float32Array) {
+            ingestSamples(ev.data);
+          }
+        };
+        sourceTap.connect(workletNode);
+        workletNode.connect(silentSink);
+        trackEntry.processorNode = workletNode;
+      } else {
+        const scriptNode = ctx.createScriptProcessor(4096, 1, 1);
+        scriptNode.onaudioprocess = (ev) => {
+          const input = ev.inputBuffer.getChannelData(0);
+          ingestSamples(new Float32Array(input));
+        };
+        sourceTap.connect(scriptNode);
+        scriptNode.connect(silentSink);
+        trackEntry.processorNode = scriptNode;
+      }
+
+      tracks.set(ch.id, trackEntry);
+    }
+
+    if (tracks.size === 0) {
+      silentSink.disconnect();
+      return { ok: false, error: 'Armed channel DSP nodes are not initialized yet.' };
+    }
+
+    this.activeMultitrack = {
+      tapPoint,
+      bitDepth,
+      sampleRateHz,
+      startedAt: Date.now(),
+      silentSink,
+      tracks,
+    };
+
+    return { ok: true, sampleRateHz };
+  }
+
+  public getMultitrackLiveState(): {
+    active: boolean;
+    elapsedSec: number;
+    sampleRateHz: number;
+    bitDepth: WavBitDepth;
+    tapPoint: MultitrackTapPoint;
+    totalBytesEstimate: number;
+    tracks: {
+      channelId: string;
+      peakDbfs: number;
+      clipped: boolean;
+      waveform: MultitrackWaveformSlice[];
+      totalSamples: number;
+    }[];
+  } | null {
+    const mt = this.activeMultitrack;
+    if (!mt) return null;
+    const bytesPerSample = mt.bitDepth === 24 ? 3 : 2;
+    let totalBytesEstimate = 0;
+    const tracks: {
+      channelId: string;
+      peakDbfs: number;
+      clipped: boolean;
+      waveform: MultitrackWaveformSlice[];
+      totalSamples: number;
+    }[] = [];
+
+    for (const [channelId, t] of mt.tracks.entries()) {
+      totalBytesEstimate += 44 + t.totalSamples * bytesPerSample;
+      const latestPeak = t.waveform.length > 0 ? t.waveform[t.waveform.length - 1].peak : t.bucketPeak;
+      tracks.push({
+        channelId,
+        peakDbfs: gainToDb(Math.max(latestPeak, t.bucketPeak)),
+        clipped: t.bucketClipped || (t.waveform[t.waveform.length - 1]?.clipped ?? false),
+        waveform: t.waveform.slice(-300),
+        totalSamples: t.totalSamples,
+      });
+    }
+
+    return {
+      active: true,
+      elapsedSec: Math.max(0, (Date.now() - mt.startedAt) / 1000),
+      sampleRateHz: mt.sampleRateHz,
+      bitDepth: mt.bitDepth,
+      tapPoint: mt.tapPoint,
+      totalBytesEstimate,
+      tracks,
+    };
+  }
+
+  public stopMultitrackRecording(): MultitrackSession | null {
+    const mt = this.activeMultitrack;
+    if (!mt) return null;
+    this.activeMultitrack = null;
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const recordedTracks: MultitrackRecordedFile[] = [];
+    let maxDurationSec = 0;
+
+    for (const [channelId, t] of mt.tracks.entries()) {
+      try {
+        t.sourceTap.disconnect(t.processorNode);
+      } catch {
+        // safe disconnect
+      }
+      try {
+        t.processorNode.disconnect();
+      } catch {
+        // safe disconnect
+      }
+      if ('port' in t.processorNode && (t.processorNode as AudioWorkletNode).port) {
+        (t.processorNode as AudioWorkletNode).port.onmessage = null;
+      }
+      if ('onaudioprocess' in t.processorNode) {
+        (t.processorNode as ScriptProcessorNode).onaudioprocess = null;
+      }
+
+      if (t.bucketSamples > 0) {
+        t.waveform.push({
+          timeSec: Number((t.totalSamples / mt.sampleRateHz).toFixed(2)),
+          peak: Number(Math.min(1, t.bucketPeak).toFixed(4)),
+          clipped: t.bucketClipped,
+        });
+      }
+
+      const wavBlob = this.encodeMonoPcmWavBlob(t.chunks, mt.sampleRateHz, mt.bitDepth);
+      const blobUrl = URL.createObjectURL(wavBlob);
+      const durationSec = Number((t.totalSamples / mt.sampleRateHz).toFixed(2));
+      if (durationSec > maxDurationSec) maxDurationSec = durationSec;
+
+      const safeSlug = t.channel.shortName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') || channelId;
+
+      recordedTracks.push({
+        channelId,
+        channelNumber: t.channel.number,
+        channelName: t.channel.name,
+        shortName: t.channel.shortName,
+        filename: `ch${String(t.channel.number).padStart(2, '0')}-${safeSlug}-${mt.tapPoint}-${stamp}.wav`,
+        blobUrl,
+        sizeBytes: wavBlob.size,
+        durationSec,
+        sampleRateHz: mt.sampleRateHz,
+        bitDepth: mt.bitDepth,
+        peakDbfs: gainToDb(t.peakLinear),
+        waveform: t.waveform,
+      });
+    }
+
+    try {
+      mt.silentSink.disconnect();
+    } catch {
+      // safe disconnect
+    }
+
+    recordedTracks.sort((a, b) => a.channelNumber - b.channelNumber);
+
+    return {
+      id: `mtrk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: new Date().toTimeString().slice(0, 8),
+      tapPoint: mt.tapPoint,
+      bitDepth: mt.bitDepth,
+      sampleRateHz: mt.sampleRateHz,
+      durationSec: maxDurationSec,
+      tracks: recordedTracks,
+    };
+  }
+
+  private generateReverbImpulse(decaySec: number, isPlate: boolean): AudioBuffer {
+    const ctx = this.ctx!;
+    const sr = ctx.sampleRate;
+    const len = Math.max(Math.floor(sr * 0.4), Math.min(sr * 5, Math.floor(sr * decaySec)));
+    const buffer = ctx.createBuffer(2, len, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      let lp = 0;
+      const dampCoeff = isPlate ? 0.42 : 0.28;
+      for (let i = 0; i < len; i++) {
+        const t = i / len;
+        const env = Math.pow(1 - t, isPlate ? 2.1 : 3.2);
+        const white = (Math.random() * 2 - 1) * env;
+        lp = lp + dampCoeff * (white - lp);
+        data[i] = (isPlate ? white * 0.65 + lp * 0.35 : lp) * 0.55;
+      }
+    }
+    return buffer;
+  }
+
+  private reconcileFxRack(fxRack: FxSlotState[], globalDspBypass: boolean): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const activeIds = new Set(fxRack.map((f) => f.id));
+
+    for (const [id, fn] of this.fxNodes.entries()) {
+      if (!activeIds.has(id)) {
+        try {
+          fn.inputTap.disconnect();
+          fn.returnGain.disconnect();
+          fn.lfoOsc?.stop();
+        } catch {
+          // safe
+        }
+        this.fxNodes.delete(id);
+      }
+    }
+
+    const mainBus = this.busNodes.get('bus-main');
+    const streamBus = this.busNodes.get('bus-stream');
+
+    for (const slot of fxRack) {
+      let fn = this.fxNodes.get(slot.id);
+      const decaySig = `${slot.type}:${slot.decaySec.toFixed(2)}`;
+      if (!fn || fn.type !== slot.type || fn.inputBusId !== slot.inputBusId) {
+        if (fn) {
+          try {
+            fn.inputTap.disconnect();
+            fn.returnGain.disconnect();
+            fn.lfoOsc?.stop();
+          } catch {
+            // safe
+          }
+          this.fxNodes.delete(slot.id);
+        }
+        const ctx = this.ctx;
+        const inputTap = ctx.createGain();
+        const preDelay = ctx.createDelay(0.25);
+        const dampingFilter = ctx.createBiquadFilter();
+        dampingFilter.type = 'lowpass';
+        const returnGain = ctx.createGain();
+
+        const srcBus = this.busNodes.get(slot.inputBusId) ?? this.busNodes.get('bus-fx');
+        if (srcBus) {
+          srcBus.analyser.connect(inputTap);
+        }
+
+        const created: FxSlotAudioNodes = {
+          slotId: slot.id,
+          type: slot.type,
+          inputBusId: slot.inputBusId,
+          inputTap,
+          preDelay,
+          dampingFilter,
+          returnGain,
+          decaySignature: decaySig,
+        };
+
+        if (slot.type === 'hall-reverb' || slot.type === 'plate-reverb') {
+          const convolver = ctx.createConvolver();
+          convolver.buffer = this.generateReverbImpulse(slot.decaySec, slot.type === 'plate-reverb');
+          inputTap.connect(preDelay);
+          preDelay.connect(convolver);
+          convolver.connect(dampingFilter);
+          dampingFilter.connect(returnGain);
+          created.convolver = convolver;
+        } else if (slot.type === 'tap-delay') {
+          const delayNode = ctx.createDelay(2.0);
+          const feedbackGain = ctx.createGain();
+          inputTap.connect(delayNode);
+          delayNode.connect(dampingFilter);
+          dampingFilter.connect(feedbackGain);
+          feedbackGain.connect(delayNode);
+          dampingFilter.connect(returnGain);
+          created.delayNode = delayNode;
+          created.feedbackGain = feedbackGain;
+        } else {
+          // vocal-chorus
+          const delayNode = ctx.createDelay(0.1);
+          delayNode.delayTime.value = 0.018;
+          const lfoOsc = ctx.createOscillator();
+          const lfoDepthGain = ctx.createGain();
+          lfoOsc.type = 'sine';
+          lfoOsc.connect(lfoDepthGain);
+          lfoDepthGain.connect(delayNode.delayTime);
+          lfoOsc.start();
+          inputTap.connect(delayNode);
+          delayNode.connect(dampingFilter);
+          dampingFilter.connect(returnGain);
+          created.delayNode = delayNode;
+          created.lfoOsc = lfoOsc;
+          created.lfoDepthGain = lfoDepthGain;
+        }
+
+        if (mainBus) returnGain.connect(mainBus.sumGain);
+        if (streamBus) returnGain.connect(streamBus.sumGain);
+        this.fxNodes.set(slot.id, created);
+        fn = created;
+      }
+
+      if (fn.convolver && fn.decaySignature !== decaySig) {
+        fn.convolver.buffer = this.generateReverbImpulse(slot.decaySec, slot.type === 'plate-reverb');
+        fn.decaySignature = decaySig;
+      }
+
+      const active = !globalDspBypass && slot.enabled && !slot.bypass;
+      fn.returnGain.gain.setTargetAtTime(active ? dbToGain(slot.returnGainDb) : 0, now, 0.02);
+      fn.dampingFilter.frequency.setTargetAtTime(Math.max(800, Math.min(18000, slot.dampingHz)), now, 0.02);
+      fn.preDelay.delayTime.setTargetAtTime(Math.max(0, Math.min(0.2, slot.preDelayMs / 1000)), now, 0.02);
+
+      if (fn.delayNode && slot.type === 'tap-delay') {
+        const quarterSec = 60 / Math.max(40, Math.min(220, slot.bpm));
+        const subMult = slot.subdivision === '1/8' ? 0.5 : slot.subdivision === 'dotted-1/8' ? 0.75 : 1.0;
+        const delaySec = Math.max(0.02, Math.min(1.8, quarterSec * subMult));
+        fn.delayNode.delayTime.setTargetAtTime(delaySec, now, 0.02);
+        if (fn.feedbackGain) {
+          fn.feedbackGain.gain.setTargetAtTime(Math.max(0, Math.min(0.85, slot.feedbackPct / 100)), now, 0.02);
+        }
+      }
+      if (fn.lfoOsc && fn.lfoDepthGain && slot.type === 'vocal-chorus') {
+        fn.lfoOsc.frequency.setTargetAtTime(Math.max(0.1, Math.min(6, slot.chorusRateHz)), now, 0.02);
+        fn.lfoDepthGain.gain.setTargetAtTime(Math.max(0, Math.min(0.012, (slot.chorusDepthPct / 100) * 0.008)), now, 0.02);
+      }
+    }
+  }
+
+  private reconcileMatrixZones(matrixZones: MatrixZone[]): void {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const activeIds = new Set(matrixZones.map((z) => z.id));
+
+    for (const [id, mn] of this.matrixNodes.entries()) {
+      if (!activeIds.has(id)) {
+        try {
+          mn.sourceTaps.forEach((g) => g.disconnect());
+          mn.analyser.disconnect();
+        } catch {
+          // safe
+        }
+        this.matrixNodes.delete(id);
+      }
+    }
+
+    for (const zone of matrixZones) {
+      let mn = this.matrixNodes.get(zone.id);
+      if (!mn) {
+        const ctx = this.ctx;
+        const sumGain = ctx.createGain();
+        const delayNode = ctx.createDelay(0.25);
+        const masterGain = ctx.createGain();
+        const limiter = ctx.createDynamicsCompressor();
+        limiter.threshold.value = -1.0;
+        limiter.ratio.value = 12;
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+
+        sumGain.connect(delayNode);
+        delayNode.connect(masterGain);
+        masterGain.connect(limiter);
+        limiter.connect(analyser);
+
+        mn = {
+          zoneId: zone.id,
+          sumGain,
+          sourceTaps: new Map(),
+          delayNode,
+          masterGain,
+          limiter,
+          analyser,
+          timeDomain: new Float32Array(new ArrayBuffer(analyser.fftSize * 4)),
+        };
+        this.matrixNodes.set(zone.id, mn);
+      }
+
+      mn.delayNode.delayTime.setTargetAtTime(Math.max(0, Math.min(0.2, zone.delayMs / 1000)), now, 0.015);
+      mn.masterGain.gain.setTargetAtTime(zone.mute ? 0 : dbToGain(zone.masterGainDb), now, 0.015);
+
+      for (const [busId, gainDb] of Object.entries(zone.sourceGains)) {
+        const bNodes = this.busNodes.get(busId);
+        if (!bNodes) continue;
+        let tap = mn.sourceTaps.get(busId);
+        if (!tap) {
+          tap = this.ctx.createGain();
+          tap.gain.value = dbToGain(gainDb);
+          bNodes.analyser.connect(tap);
+          tap.connect(mn.sumGain);
+          mn.sourceTaps.set(busId, tap);
+        } else {
+          tap.gain.setTargetAtTime(dbToGain(gainDb), now, 0.015);
+        }
+      }
+    }
   }
 
   public syncGraph(
@@ -1493,7 +2421,11 @@ class RealTimeConsoleAudioEngine {
     virtualDi?: VirtualDiState,
     speakers: SpeakerBand[] = [],
     virtualCables: VirtualCableNode[] = [],
-    globalDspBypass = false
+    globalDspBypass = false,
+    dcaGroups: DcaGroupState[] = [],
+    fxRack: FxSlotState[] = [],
+    matrixZones: MatrixZone[] = [],
+    soloMode: SoloMode = 'afl'
   ): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -1550,7 +2482,6 @@ class RealTimeConsoleAudioEngine {
       vcNodes.gainNode.gain.setTargetAtTime(vc.active ? dbToGain(vc.gainDb) : 0, now, 0.015);
       vcNodes.monitorGain.gain.setTargetAtTime(vc.monitorToMaster && vc.active ? 1.0 : 0.0, now, 0.015);
 
-      // Update bus tap
       if (vc.sourceKind === 'bus' && vc.sourceId) {
         if (vcNodes.attachedBusTap?.busId !== vc.sourceId) {
           try {
@@ -1577,7 +2508,6 @@ class RealTimeConsoleAudioEngine {
         vcNodes.attachedBusTap = undefined;
       }
 
-      // Update channel tap
       if (vc.sourceKind === 'channel' && vc.sourceId) {
         if (vcNodes.attachedChannelTap?.channelId !== vc.sourceId) {
           try {
@@ -1605,13 +2535,15 @@ class RealTimeConsoleAudioEngine {
       }
     }
 
-    // 3. Reconcile Channels dynamically (add/remove/PEQ resize + Bus Sends)
+    // 3. Reconcile Channels dynamically (DCA, Solo PFL/AFL/SIP, Parallel Comp, Sidechain, Bus Sends)
     const activeChannelIds = new Set(channels.map((c) => c.id));
     for (const [id, cNodes] of this.channelNodes.entries()) {
       if (!activeChannelIds.has(id)) {
         this.detachChannelSource(id);
         try {
           cNodes.sendGains.forEach((s) => s.gain.disconnect());
+          cNodes.soloTapGain?.disconnect();
+          cNodes.meterWorkletNode?.disconnect();
           cNodes.postAnalyser.disconnect();
         } catch {
           // safe
@@ -1620,7 +2552,11 @@ class RealTimeConsoleAudioEngine {
       }
     }
 
+    const dcaMap = new Map(dcaGroups.map((d) => [d.id, d]));
     const anySolo = channels.some((c) => c.solo);
+    if (this.soloCueSum) {
+      this.soloCueSum.gain.setTargetAtTime(anySolo && soloMode !== 'sip' ? 1.0 : 0.0, now, 0.015);
+    }
 
     for (const ch of channels) {
       let nodes = this.channelNodes.get(ch.id);
@@ -1631,7 +2567,12 @@ class RealTimeConsoleAudioEngine {
         this.rebuildChannelEq(ch, nodes);
       }
 
-      const effectiveMute = ch.mute || (anySolo && !ch.solo);
+      const dca = ch.dcaGroup ? dcaMap.get(ch.dcaGroup) : undefined;
+      const dcaMuted = dca ? dca.mute : false;
+      const dcaScale = dca ? dbToGain(dca.faderDb) : 1;
+
+      const sipMute = soloMode === 'sip' && anySolo && !ch.solo;
+      const effectiveMute = ch.mute || dcaMuted || sipMute;
       const polarity = ch.polarityInvert ? -1 : 1;
       const vdiBoost =
         !globalDspBypass && virtualDi && virtualDi.sourceChannelId === ch.id && !virtualDi.bypass
@@ -1657,11 +2598,13 @@ class RealTimeConsoleAudioEngine {
         filter.type = eqShapeToBiquadType(band.shape);
         filter.frequency.setTargetAtTime(Math.max(20, Math.min(20000, band.freqHz)), now, 0.02);
         filter.Q.setTargetAtTime(Math.max(0.2, Math.min(20, band.q)), now, 0.02);
-        filter.gain.setTargetAtTime(
-          !globalDspBypass && ch.eqEnabled && band.enabled ? band.gainDb : 0,
-          now,
-          0.02
-        );
+        if (!band.dynamicEnabled) {
+          filter.gain.setTargetAtTime(
+            !globalDspBypass && ch.eqEnabled && band.enabled ? band.gainDb : 0,
+            now,
+            0.02
+          );
+        }
       });
 
       ch.geqBands.forEach((gainDb, idx) => {
@@ -1670,17 +2613,60 @@ class RealTimeConsoleAudioEngine {
         gf.gain.setTargetAtTime(!globalDspBypass && ch.geqEnabled ? gainDb : 0, now, 0.02);
       });
 
+      nodes.deEsserFilter.frequency.setTargetAtTime(ch.dynamics.deEsserFreqHz ?? 6500, now, 0.02);
+      if (globalDspBypass || !ch.dynamics.deEsserEnabled) {
+        nodes.deEsserFilter.gain.setTargetAtTime(0, now, 0.02);
+      }
+
+      nodes.sidechainHpf.frequency.setTargetAtTime(
+        Math.max(20, Math.min(1000, ch.dynamics.sidechainHpfHz ?? 120)),
+        now,
+        0.02
+      );
+
       if (!globalDspBypass && ch.dynamics.compEnabled) {
         nodes.comp.threshold.setTargetAtTime(ch.dynamics.compThresholdDb, now, 0.02);
         nodes.comp.ratio.setTargetAtTime(ch.dynamics.compRatio, now, 0.02);
+        nodes.comp.attack.setTargetAtTime(Math.max(0.001, ch.dynamics.compAttackMs / 1000), now, 0.02);
+        nodes.comp.release.setTargetAtTime(Math.max(0.01, ch.dynamics.compReleaseMs / 1000), now, 0.02);
+        const wetRatio = Math.max(0, Math.min(1, (ch.dynamics.parallelMixPct ?? 100) / 100));
+        nodes.parallelDryGain.gain.setTargetAtTime(1 - wetRatio, now, 0.02);
+        nodes.parallelWetGain.gain.setTargetAtTime(wetRatio * dbToGain(ch.dynamics.compMakeupDb), now, 0.02);
       } else {
         nodes.comp.threshold.setTargetAtTime(0, now, 0.02);
         nodes.comp.ratio.setTargetAtTime(1, now, 0.02);
+        nodes.parallelDryGain.gain.setTargetAtTime(1, now, 0.02);
+        nodes.parallelWetGain.gain.setTargetAtTime(0, now, 0.02);
       }
 
-      const targetGain = effectiveMute ? 0 : dbToGain(ch.faderDb) * vdiBoost;
+      if (globalDspBypass || !ch.dynamics.gateEnabled) {
+        nodes.gateGain.gain.setTargetAtTime(1, now, 0.015);
+      }
+
+      const targetGain = effectiveMute ? 0 : dbToGain(ch.faderDb) * dcaScale * vdiBoost;
       nodes.faderGain.gain.setTargetAtTime(targetGain, now, 0.015);
       nodes.panner.pan.setTargetAtTime(ch.pan / 100, now, 0.015);
+
+      // PFL / AFL Solo Cue Tap routing
+      if (this.soloCueSum) {
+        const wantPre = soloMode === 'pfl';
+        if (!nodes.soloTapGain || nodes.soloTapPreFader !== wantPre) {
+          try {
+            nodes.soloTapGain?.disconnect();
+          } catch {
+            // safe
+          }
+          const soloTap = this.ctx.createGain();
+          soloTap.gain.value = ch.solo && soloMode !== 'sip' ? 1.0 : 0.0;
+          const tapNode: AudioNode = wantPre ? nodes.preAnalyser : nodes.postAnalyser;
+          tapNode.connect(soloTap);
+          soloTap.connect(this.soloCueSum);
+          nodes.soloTapGain = soloTap;
+          nodes.soloTapPreFader = wantPre;
+        } else {
+          nodes.soloTapGain.gain.setTargetAtTime(ch.solo && soloMode !== 'sip' ? 1.0 : 0.0, now, 0.015);
+        }
+      }
 
       // Reconcile channel -> bus sends
       const sendKeyMap: { busId: string; enabled: boolean; levelDb: number; preFader: boolean }[] = [
@@ -1688,19 +2674,19 @@ class RealTimeConsoleAudioEngine {
         { busId: 'bus-sub', enabled: ch.assignSub && !effectiveMute, levelDb: 0, preFader: false },
         {
           busId: 'bus-mon1',
-          enabled: ch.sends.mon1.enabled && !ch.mute,
+          enabled: ch.sends.mon1.enabled && !ch.mute && !dcaMuted,
           levelDb: ch.sends.mon1.levelDb,
           preFader: ch.sends.mon1.preFader,
         },
         {
           busId: 'bus-mon2',
-          enabled: ch.sends.mon2.enabled && !ch.mute,
+          enabled: ch.sends.mon2.enabled && !ch.mute && !dcaMuted,
           levelDb: ch.sends.mon2.levelDb,
           preFader: ch.sends.mon2.preFader,
         },
         {
           busId: 'bus-iem',
-          enabled: ch.sends.iemChoir.enabled && !ch.mute,
+          enabled: ch.sends.iemChoir.enabled && !ch.mute && !dcaMuted,
           levelDb: ch.sends.iemChoir.levelDb,
           preFader: ch.sends.iemChoir.preFader,
         },
@@ -1718,7 +2704,6 @@ class RealTimeConsoleAudioEngine {
         },
       ];
 
-      // Include any user-created buses dynamically
       for (const b of buses) {
         if (sendKeyMap.some((s) => s.busId === b.id)) continue;
         const customSend = ch.sends[b.id];
@@ -1743,19 +2728,31 @@ class RealTimeConsoleAudioEngine {
             }
           }
           const sendGain = this.ctx.createGain();
-          sendGain.gain.value = spec.enabled ? dbToGain(spec.levelDb) : 0;
-          const tapPoint: AudioNode = spec.preFader ? nodes.comp : nodes.postAnalyser;
+          sendGain.gain.value = spec.enabled ? dbToGain(spec.levelDb) * (spec.preFader ? 1 : dcaScale) : 0;
+          const tapPoint: AudioNode = spec.preFader ? nodes.parallelSumGain : nodes.postAnalyser;
           tapPoint.connect(sendGain);
           sendGain.connect(bNodes.sumGain);
           existingSend = { gain: sendGain, preFader: spec.preFader };
           nodes.sendGains.set(spec.busId, existingSend);
         } else {
-          existingSend.gain.gain.setTargetAtTime(spec.enabled ? dbToGain(spec.levelDb) : 0, now, 0.015);
+          existingSend.gain.gain.setTargetAtTime(
+            spec.enabled ? dbToGain(spec.levelDb) * (spec.preFader ? 1 : dcaScale) : 0,
+            now,
+            0.015
+          );
         }
       }
     }
 
-    // 4. Reconcile Speakers / Crossovers / Final Outputs dynamically
+    // 4. Reconcile 4-Slot Pro FX Rack & N×M Matrix Zones
+    if (fxRack.length > 0) {
+      this.reconcileFxRack(fxRack, globalDspBypass);
+    }
+    if (matrixZones.length > 0) {
+      this.reconcileMatrixZones(matrixZones);
+    }
+
+    // 5. Reconcile Speakers / Crossovers / Final Outputs dynamically
     const activeSpkIds = new Set(speakers.map((s) => s.id));
     for (const [id, sNodes] of this.speakerNodes.entries()) {
       if (!activeSpkIds.has(id)) {
@@ -1835,10 +2832,25 @@ class RealTimeConsoleAudioEngine {
     speakers?: SpeakerBand[],
     buses?: BusNode[],
     virtualCables?: VirtualCableNode[],
-    globalDspBypass = false
+    globalDspBypass = false,
+    dcaGroups: DcaGroupState[] = [],
+    fxRack: FxSlotState[] = [],
+    matrixZones: MatrixZone[] = [],
+    soloMode: SoloMode = 'afl'
   ): void {
     const resolvedBuses = buses ?? (mainBus ? [mainBus] : []);
-    this.syncGraph(channels, resolvedBuses, virtualDi, speakers ?? [], virtualCables ?? [], globalDspBypass);
+    this.syncGraph(
+      channels,
+      resolvedBuses,
+      virtualDi,
+      speakers ?? [],
+      virtualCables ?? [],
+      globalDspBypass,
+      dcaGroups,
+      fxRack,
+      matrixZones,
+      soloMode
+    );
   }
 
   private readAnalyserLevels(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): { peakDbfs: number; rmsDbfs: number } {
@@ -1879,6 +2891,118 @@ class RealTimeConsoleAudioEngine {
     return { peakHoldDbfs: nextVal, clipped: nextClip };
   }
 
+  // --- Virtual Soundcheck Multi-Track Stem Playback Engine ---
+  public async loadVirtualSoundcheckTracks(
+    tracks: VirtualSoundcheckTrack[],
+    channels: ChannelStrip[],
+    buses: BusNode[],
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[]
+  ): Promise<{ loadedCount: number; durationSec: number }> {
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
+    if (!this.ctx) throw new Error('AudioContext failed to initialize');
+    this.stopVirtualSoundcheck();
+    this.soundcheckBuffers.clear();
+
+    let maxDuration = 0;
+    for (const track of tracks) {
+      const resp = await fetch(track.blobUrl);
+      const arrBuf = await resp.arrayBuffer();
+      const decoded = await this.ctx.decodeAudioData(arrBuf);
+      this.soundcheckBuffers.set(track.channelId, { track, buffer: decoded });
+      if (decoded.duration > maxDuration) maxDuration = decoded.duration;
+    }
+    this.soundcheckState.durationSec = Number(maxDuration.toFixed(2));
+    this.soundcheckState.offsetSec = 0;
+    return { loadedCount: this.soundcheckBuffers.size, durationSec: this.soundcheckState.durationSec };
+  }
+
+  public startVirtualSoundcheck(): boolean {
+    if (!this.ctx || this.soundcheckBuffers.size === 0) return false;
+    this.stopSoundcheckSourceNodesOnly();
+
+    const startTime = this.ctx.currentTime + 0.04;
+    const offset = Math.max(0, Math.min(this.soundcheckState.durationSec, this.soundcheckState.offsetSec));
+
+    for (const [channelId, entry] of this.soundcheckBuffers.entries()) {
+      const chNodes = this.channelNodes.get(channelId);
+      if (!chNodes) continue;
+      if (offset >= entry.buffer.duration && !this.soundcheckState.loop) continue;
+
+      const src = this.ctx.createBufferSource();
+      src.buffer = entry.buffer;
+      src.loop = this.soundcheckState.loop;
+      src.connect(chNodes.inputSumGain);
+      src.start(startTime, offset % Math.max(0.01, entry.buffer.duration));
+      this.soundcheckActiveSources.set(channelId, src);
+    }
+    this.soundcheckState.playing = true;
+    this.soundcheckState.startedCtxTime = startTime;
+    return this.soundcheckActiveSources.size > 0;
+  }
+
+  private stopSoundcheckSourceNodesOnly(): void {
+    for (const src of this.soundcheckActiveSources.values()) {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        // safe cleanup
+      }
+    }
+    this.soundcheckActiveSources.clear();
+  }
+
+  public pauseVirtualSoundcheck(): void {
+    if (!this.ctx || !this.soundcheckState.playing) return;
+    const elapsed = Math.max(0, this.ctx.currentTime - this.soundcheckState.startedCtxTime);
+    const total = this.soundcheckState.offsetSec + elapsed;
+    this.soundcheckState.offsetSec =
+      this.soundcheckState.loop && this.soundcheckState.durationSec > 0
+        ? total % this.soundcheckState.durationSec
+        : Math.min(this.soundcheckState.durationSec, total);
+    this.soundcheckState.playing = false;
+    this.stopSoundcheckSourceNodesOnly();
+  }
+
+  public stopVirtualSoundcheck(): void {
+    this.soundcheckState.playing = false;
+    this.soundcheckState.offsetSec = 0;
+    this.stopSoundcheckSourceNodesOnly();
+  }
+
+  public setVirtualSoundcheckLoop(loop: boolean): void {
+    this.soundcheckState.loop = loop;
+    for (const src of this.soundcheckActiveSources.values()) {
+      src.loop = loop;
+    }
+  }
+
+  public getVirtualSoundcheckStatus(): {
+    loadedCount: number;
+    playing: boolean;
+    loop: boolean;
+    positionSec: number;
+    durationSec: number;
+  } {
+    let pos = this.soundcheckState.offsetSec;
+    if (this.soundcheckState.playing && this.ctx) {
+      const elapsed = Math.max(0, this.ctx.currentTime - this.soundcheckState.startedCtxTime);
+      const raw = this.soundcheckState.offsetSec + elapsed;
+      pos =
+        this.soundcheckState.loop && this.soundcheckState.durationSec > 0
+          ? raw % this.soundcheckState.durationSec
+          : Math.min(this.soundcheckState.durationSec, raw);
+    }
+    return {
+      loadedCount: this.soundcheckBuffers.size,
+      playing: this.soundcheckState.playing,
+      loop: this.soundcheckState.loop,
+      positionSec: Number(pos.toFixed(2)),
+      durationSec: this.soundcheckState.durationSec,
+    };
+  }
+
   public sampleMeters(
     channels: ChannelStrip[],
     buses: BusNode[],
@@ -1886,19 +3010,25 @@ class RealTimeConsoleAudioEngine {
     intelligenceConfig: AudioIntelligenceConfig = DEFAULT_INTELLIGENCE_CONFIG,
     speakers: SpeakerBand[] = [],
     virtualCables: VirtualCableNode[] = [],
-    globalDspBypass = false
+    globalDspBypass = false,
+    dcaGroups: DcaGroupState[] = [],
+    matrixZones: MatrixZone[] = [],
+    soloMode: SoloMode = 'afl'
   ): {
     meters: Record<string, MeterReading>;
     spectrum: number[];
     roomSpectrum: number[];
     liveFeedbackCandidate: LiveFeedbackCandidate | null;
     systemIntelligence: SystemIntelligenceSummary;
+    broadcastLoudness: BroadcastLoudnessMetrics;
   } {
     const meters: Record<string, MeterReading> = {};
     const channelInsights: Record<string, ChannelAcousticAnalysis> = {};
+    const dcaMap = new Map(dcaGroups.map((d) => [d.id, d]));
     const anySolo = channels.some((c) => c.solo);
     const isRunning = this.ctx?.state === 'running';
     const sampleRateHz = this.ctx?.sampleRate ?? 48000;
+    const nowMs = Date.now();
 
     let hottestActiveChId = channels[0]?.id ?? 'ch-01';
     let hottestChannelRms = -80;
@@ -1913,8 +3043,9 @@ class RealTimeConsoleAudioEngine {
 
     for (const ch of channels) {
       const nodes = this.channelNodes.get(ch.id);
-      const isMuted = ch.mute || (anySolo && !ch.solo);
-      const hasSource = this.channelSources.has(ch.id);
+      const dca = ch.dcaGroup ? dcaMap.get(ch.dcaGroup) : undefined;
+      const isMuted = ch.mute || (dca?.mute ?? false) || (soloMode === 'sip' && anySolo && !ch.solo);
+      const hasSource = this.channelSources.has(ch.id) || this.soundcheckActiveSources.has(ch.id);
 
       let prePeak = -80;
       let preRms = -80;
@@ -1924,12 +3055,33 @@ class RealTimeConsoleAudioEngine {
 
       if (isRunning && nodes && hasSource) {
         const pre = this.readAnalyserLevels(nodes.preAnalyser, nodes.preTimeDomain);
-        const post = this.readAnalyserLevels(nodes.postAnalyser, nodes.postTimeDomain);
+        const workletPost = this.workletMeterCache.get(ch.id);
+        const post = workletPost ?? this.readAnalyserLevels(nodes.postAnalyser, nodes.postTimeDomain);
         prePeak = pre.peakDbfs;
         preRms = pre.rmsDbfs;
         postPeak = isMuted ? -80 : post.peakDbfs;
         postRms = isMuted ? -80 : post.rmsDbfs;
-        gr = !globalDspBypass && !isMuted && ch.dynamics.compEnabled ? Math.max(0, Math.abs(nodes.comp.reduction)) : 0;
+
+        // Real Noise Gate envelope with Attack / Hold / Release + Sidechain key sensing
+        if (!globalDspBypass && ch.dynamics.gateEnabled && this.ctx) {
+          const scLvl = this.readAnalyserLevels(nodes.sidechainAnalyser, nodes.sidechainTimeDomain);
+          const keyDbfs = Math.max(preRms, scLvl.rmsDbfs);
+          if (keyDbfs >= ch.dynamics.gateThresholdDb) {
+            nodes.gateHoldUntilMs = nowMs + (ch.dynamics.gateHoldMs ?? 45);
+            nodes.gateEnvelopeGain = 1.0;
+            const attSec = Math.max(0.001, (ch.dynamics.gateAttackMs ?? 4) / 1000);
+            nodes.gateGain.gain.setTargetAtTime(1.0, this.ctx.currentTime, attSec);
+          } else if (nowMs > nodes.gateHoldUntilMs) {
+            const floorGain = dbToGain(ch.dynamics.gateRangeDb);
+            nodes.gateEnvelopeGain = floorGain;
+            const relSec = Math.max(0.01, (ch.dynamics.gateReleaseMs ?? 140) / 1000);
+            nodes.gateGain.gain.setTargetAtTime(floorGain, this.ctx.currentTime, relSec);
+          }
+        }
+
+        const compGr = !globalDspBypass && !isMuted && ch.dynamics.compEnabled ? Math.max(0, Math.abs(nodes.comp.reduction)) : 0;
+        const gateGr = nodes.gateEnvelopeGain < 0.99 ? Math.max(0, -gainToDb(nodes.gateEnvelopeGain)) : 0;
+        gr = Number((compGr + gateGr * 0.5).toFixed(2));
 
         if (!isMuted && speechCategories.has(ch.category) && preRms > -62) {
           const instPower = Math.pow(10, preRms / 10);
@@ -1990,7 +3142,6 @@ class RealTimeConsoleAudioEngine {
         hottestActiveChId = ch.id;
       }
 
-      // Noise floor tracking over active input stream
       let noiseFloorDbfs = this.noiseFloorMap.get(ch.id) ?? -72;
       if (isRunning && lvl.hasSource) {
         const clampedFloor = Math.max(-80, Math.min(-25, lvl.preRms));
@@ -2018,6 +3169,35 @@ class RealTimeConsoleAudioEngine {
           autoTrimOffsetDb
         );
         channelInsights[ch.id] = insight;
+
+        // Dynamic EQ & De-Esser spectral envelope modulation
+        if (!globalDspBypass && this.ctx) {
+          const nyquist = sampleRateHz / 2;
+          const binCount = nodes.preFreqData.length;
+          if (ch.eqEnabled) {
+            ch.eqBands.forEach((band, idx) => {
+              const filter = nodes.eqFilters[idx];
+              if (!filter || !band.enabled || !band.dynamicEnabled) return;
+              const binIdx = Math.max(1, Math.min(binCount - 1, Math.round((band.freqHz / nyquist) * binCount)));
+              const bandEnergyDb = nodes.preFreqData[binIdx] ?? -80;
+              const thresh = band.dynamicThresholdDb ?? -20;
+              const ratio = Math.max(1.2, band.dynamicRatio ?? 3);
+              const excess = Math.max(0, bandEnergyDb - thresh);
+              const dynCut = Math.min(12, excess * (1 - 1 / ratio));
+              filter.gain.setTargetAtTime(band.gainDb - dynCut, this.ctx!.currentTime, 0.025);
+            });
+          }
+
+          if (ch.dynamics.deEsserEnabled) {
+            const sibFreq = ch.dynamics.deEsserFreqHz ?? 6500;
+            const sIdx = Math.max(1, Math.min(binCount - 2, Math.round((sibFreq / nyquist) * binCount)));
+            const sibDb = Math.max(nodes.preFreqData[sIdx - 1] ?? -80, nodes.preFreqData[sIdx] ?? -80, nodes.preFreqData[sIdx + 1] ?? -80);
+            const deThresh = ch.dynamics.deEsserThresholdDb ?? -18;
+            const excess = Math.max(0, sibDb - deThresh);
+            const deCut = -Math.min(10, excess * 0.65);
+            nodes.deEsserFilter.gain.setTargetAtTime(deCut, this.ctx.currentTime, 0.015);
+          }
+        }
 
         if (insight.subRumbleRatioDb > -2 || ch.category === 'bass' || ch.category === 'drums') {
           activeLowBandChannels.push(ch);
@@ -2085,7 +3265,15 @@ class RealTimeConsoleAudioEngine {
       }
     }
 
-    // Read real AnalyserNodes for EVERY Bus
+    // Read real AnalyserNodes for EVERY Bus + ITU-R BS.1770-4 K-weighted Loudness on Stream Bus
+    let broadcastLoudness: BroadcastLoudnessMetrics = {
+      momentaryLufs: -80,
+      shortTermLufs: -80,
+      integratedLufs: -80,
+      truePeakDbtp: -80,
+      loudnessRangeLu: 0,
+    };
+
     for (const bus of buses) {
       const bNodes = this.busNodes.get(bus.id);
       if (isRunning && bNodes && !bus.mute) {
@@ -2093,6 +3281,63 @@ class RealTimeConsoleAudioEngine {
         const hold = this.updatePeakHold(bus.id, lvl.peakDbfs);
         const gr = Math.max(0, Math.abs(bNodes.limiter.reduction));
         const grHistory = this.pushGrHistory(bus.id, gr);
+
+        let lufsMomentary: number | undefined;
+        let lufsShortTerm: number | undefined;
+        let lufsIntegrated: number | undefined;
+        let truePeakDbtp: number | undefined;
+
+        if (bNodes.kWeightAnalyser && bNodes.kWeightTimeDomain) {
+          bNodes.kWeightAnalyser.getFloatTimeDomainData(bNodes.kWeightTimeDomain);
+          let sumSq = 0;
+          for (let i = 0; i < bNodes.kWeightTimeDomain.length; i++) {
+            const s = bNodes.kWeightTimeDomain[i];
+            sumSq += s * s;
+          }
+          const meanSquare = sumSq / bNodes.kWeightTimeDomain.length;
+          const instantLufs = meanSquare > 1e-10 ? -0.691 + 10 * Math.log10(meanSquare) : -80;
+
+          if (instantLufs > -70) {
+            this.lufsWindowEnergies.push(meanSquare);
+            if (this.lufsWindowEnergies.length > 60) this.lufsWindowEnergies.shift();
+            this.lufsIntegratedPowers.push(meanSquare);
+            if (this.lufsIntegratedPowers.length > 1200) this.lufsIntegratedPowers.shift();
+          }
+
+          const momentarySlice = this.lufsWindowEnergies.slice(-8);
+          const momentaryPower =
+            momentarySlice.length > 0
+              ? momentarySlice.reduce((a, b) => a + b, 0) / momentarySlice.length
+              : 0;
+          const shortTermPower =
+            this.lufsWindowEnergies.length > 0
+              ? this.lufsWindowEnergies.reduce((a, b) => a + b, 0) / this.lufsWindowEnergies.length
+              : 0;
+          const intPower =
+            this.lufsIntegratedPowers.length > 0
+              ? this.lufsIntegratedPowers.reduce((a, b) => a + b, 0) / this.lufsIntegratedPowers.length
+              : 0;
+
+          lufsMomentary = momentaryPower > 1e-10 ? Number((-0.691 + 10 * Math.log10(momentaryPower)).toFixed(1)) : -80;
+          lufsShortTerm = shortTermPower > 1e-10 ? Number((-0.691 + 10 * Math.log10(shortTermPower)).toFixed(1)) : -80;
+          lufsIntegrated = intPower > 1e-10 ? Number((-0.691 + 10 * Math.log10(intPower)).toFixed(1)) : -80;
+          truePeakDbtp = Number(gainToDb(compute4xTruePeakLinear(bNodes.timeDomain)).toFixed(1));
+
+          const lufsVals = this.lufsWindowEnergies.map((p) => (p > 1e-10 ? -0.691 + 10 * Math.log10(p) : -80)).filter((v) => v > -70);
+          const lra =
+            lufsVals.length > 4
+              ? Number(Math.max(0, Math.max(...lufsVals) - Math.min(...lufsVals)).toFixed(1))
+              : 0;
+
+          broadcastLoudness = {
+            momentaryLufs: lufsMomentary,
+            shortTermLufs: lufsShortTerm,
+            integratedLufs: lufsIntegrated,
+            truePeakDbtp,
+            loudnessRangeLu: lra,
+          };
+        }
+
         meters[bus.id] = {
           nodeId: bus.id,
           inputPeakDbfs: lvl.peakDbfs,
@@ -2104,12 +3349,16 @@ class RealTimeConsoleAudioEngine {
           noiseFloorDbfs: -80,
           crestFactorDb: lvl.rmsDbfs > -68 ? Number(Math.max(0, lvl.peakDbfs - lvl.rmsDbfs).toFixed(1)) : 0,
           fundamentalHz: 0,
-          clipping: lvl.peakDbfs >= -0.2,
+          clipping: (truePeakDbtp ?? lvl.peakDbfs) >= -0.2,
           gainReductionDb: gr,
           gainReductionHistory: grHistory,
           signalPresent: lvl.rmsDbfs > -68,
           source: 'software_measured',
           graphVersion,
+          lufsMomentary,
+          lufsShortTerm,
+          lufsIntegrated,
+          truePeakDbtp,
         };
       } else {
         const grHistory = this.pushGrHistory(bus.id, 0);
@@ -2127,6 +3376,52 @@ class RealTimeConsoleAudioEngine {
           clipping: false,
           gainReductionDb: 0,
           gainReductionHistory: grHistory,
+          signalPresent: false,
+          source: 'software_measured',
+          graphVersion,
+        };
+      }
+    }
+
+    // Read real AnalyserNodes for EVERY Matrix Zone
+    for (const zone of matrixZones) {
+      const mNodes = this.matrixNodes.get(zone.id);
+      if (isRunning && mNodes && !zone.mute) {
+        const lvl = this.readAnalyserLevels(mNodes.analyser, mNodes.timeDomain);
+        const hold = this.updatePeakHold(zone.id, lvl.peakDbfs);
+        meters[zone.id] = {
+          nodeId: zone.id,
+          inputPeakDbfs: lvl.peakDbfs,
+          inputRmsDbfs: lvl.rmsDbfs,
+          peakDbfs: lvl.peakDbfs,
+          rmsDbfs: lvl.rmsDbfs,
+          peakHoldDbfs: hold.peakHoldDbfs,
+          peakHoldClipped: hold.clipped,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: lvl.peakDbfs >= -0.2,
+          gainReductionDb: Math.max(0, Math.abs(mNodes.limiter.reduction)),
+          gainReductionHistory: [],
+          signalPresent: lvl.rmsDbfs > -68,
+          source: 'software_measured',
+          graphVersion,
+        };
+      } else {
+        meters[zone.id] = {
+          nodeId: zone.id,
+          inputPeakDbfs: -80,
+          inputRmsDbfs: -80,
+          peakDbfs: -80,
+          rmsDbfs: -80,
+          peakHoldDbfs: -80,
+          peakHoldClipped: false,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: false,
+          gainReductionDb: 0,
+          gainReductionHistory: [],
           signalPresent: false,
           source: 'software_measured',
           graphVersion,
@@ -2311,7 +3606,11 @@ class RealTimeConsoleAudioEngine {
     }
 
     const shortTermLufs =
-      isRunning && liveMasterRms > -68 ? Number((liveMasterRms - 0.8).toFixed(1)) : -80;
+      broadcastLoudness.shortTermLufs > -75
+        ? broadcastLoudness.shortTermLufs
+        : isRunning && liveMasterRms > -68
+          ? Number((liveMasterRms - 0.8).toFixed(1))
+          : -80;
     const headroomMarginDb =
       isRunning && liveMasterPeak > -70
         ? Number(Math.max(0, -0.8 - liveMasterPeak).toFixed(1))
@@ -2330,6 +3629,7 @@ class RealTimeConsoleAudioEngine {
         automixActiveMics,
         channelInsights,
       },
+      broadcastLoudness,
     };
   }
 }

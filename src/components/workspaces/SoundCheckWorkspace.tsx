@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Lock, Radio, ShieldAlert, Activity } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { Lock, Radio, ShieldAlert, Activity, Play, Pause, Square, Repeat, Upload, Disc } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
 import { ConsoleButton } from '../hardware/ConsoleButton';
 import { RotaryKnob } from '../hardware/RotaryKnob';
@@ -12,15 +12,31 @@ export const SoundCheckWorkspace: React.FC = () => {
     runSoundCheckItem,
     meters,
     buses,
+    channels,
     spectrum,
     testToneGainDb,
     setTestToneConfig,
     testToneActive,
+    multitrackSessions,
+    virtualSoundcheckStatus,
+    loadVirtualSoundcheckFiles,
+    mountMultitrackSessionForSoundcheck,
+    toggleVirtualSoundcheckPlay,
+    stopVirtualSoundcheck,
+    setVirtualSoundcheckLoop,
   } = useAudioConsole();
 
   const [selectedIdx, setSelectedIdx] = useState<number>(0);
-  const [scTab, setScTab] = useState<'probes' | 'generator'>('probes');
+  const [scTab, setScTab] = useState<'probes' | 'generator' | 'soundcheck'>('probes');
   const [liveOutputArmed, setLiveOutputArmed] = useState<boolean>(false);
+  const [vscStatusMessage, setVscStatusMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const formatTime = (sec: number) => {
+    const mins = Math.floor(sec / 60);
+    const secs = Math.floor(sec % 60);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
 
   const selected = soundCheckItems[selectedIdx] ?? soundCheckItems[0];
   const mainBus = buses.find((b) => b.id === 'bus-main')!;
@@ -49,6 +65,14 @@ export const SoundCheckWorkspace: React.FC = () => {
           {[
             { id: 'probes', label: 'PROBE MATRIX & SCOPE', icon: Activity },
             { id: 'generator', label: 'SIGNAL GENERATOR & EXEC', icon: Radio },
+            {
+              id: 'soundcheck',
+              label:
+                virtualSoundcheckStatus.loadedCount > 0
+                  ? `VIRTUAL SOUNDCHECK (${virtualSoundcheckStatus.loadedCount})`
+                  : 'VIRTUAL SOUNDCHECK',
+              icon: Disc,
+            },
           ].map((t) => {
             const Icon = t.icon;
             return (
@@ -205,7 +229,7 @@ export const SoundCheckWorkspace: React.FC = () => {
             </div>
           </div>
         </div>
-      ) : (
+      ) : scTab === 'generator' ? (
         /* Tab 2: Dedicated Signal Generator Knobs & Probe Runner */
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
           <div className="lg:col-span-6 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-3 min-h-0 overflow-hidden">
@@ -304,6 +328,210 @@ export const SoundCheckWorkspace: React.FC = () => {
                 levelDbfs={mainMeter?.rmsDbfs ?? -80}
                 peakLed={mainMeter?.clipping}
               />
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Tab 3: Multi-Track Virtual Soundcheck Transport & Stem Loader */
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
+          <div className="lg:col-span-7 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2.5 min-h-0 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2 shrink-0">
+              <div>
+                <div className="text-xs font-mono font-semibold text-amber-300 uppercase">
+                  Multi-Track Virtual Soundcheck Transport
+                </div>
+                <div className="text-[10px] font-mono text-slate-400">
+                  Routes phase-aligned WAV/AudioBuffer stems directly into channel Pre-DSP inputs
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*"
+                  multiple
+                  className="hidden"
+                  onChange={async (e) => {
+                    const files = Array.from(e.target.files ?? []);
+                    if (files.length === 0) return;
+                    const assignments = files
+                      .slice(0, channels.length)
+                      .map((file, idx) => ({ channelId: channels[idx].id, file }));
+                    const res = await loadVirtualSoundcheckFiles(assignments);
+                    setVscStatusMessage(
+                      res.ok
+                        ? `Mounted ${res.loadedCount} stem file(s) (${res.durationSec.toFixed(1)}s)`
+                        : res.error ?? 'Failed to decode stems'
+                    );
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-2.5 py-1 rounded console-btn-surface border-sky-400/50 text-[10px] font-mono text-sky-200 flex items-center gap-1.5"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Load Stems (CH 1–N)</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="oled-display rounded p-3 flex flex-col gap-2 shrink-0">
+              <div className="flex items-center justify-between text-xs font-mono">
+                <span className="text-slate-300">
+                  TRACKS MOUNTED:{' '}
+                  <strong className="text-emerald-300 tabular-nums">
+                    {virtualSoundcheckStatus.loadedCount}
+                  </strong>
+                </span>
+                <span className="text-amber-300 tabular-nums font-bold">
+                  {formatTime(virtualSoundcheckStatus.positionSec)} /{' '}
+                  {formatTime(virtualSoundcheckStatus.durationSec)}
+                </span>
+              </div>
+
+              <div className="w-full h-2.5 console-well rounded overflow-hidden">
+                <div
+                  style={{
+                    width:
+                      virtualSoundcheckStatus.durationSec > 0
+                        ? `${Math.min(
+                            100,
+                            (virtualSoundcheckStatus.positionSec /
+                              virtualSoundcheckStatus.durationSec) *
+                              100
+                          )}%`
+                        : '0%',
+                  }}
+                  className="h-full bg-gradient-to-r from-emerald-500 to-amber-400 transition-[width] duration-75"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-2 pt-1">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={virtualSoundcheckStatus.loadedCount === 0}
+                    onClick={toggleVirtualSoundcheckPlay}
+                    className={`px-3 py-1.5 rounded text-xs font-mono font-bold flex items-center gap-1.5 border disabled:opacity-40 ${
+                      virtualSoundcheckStatus.playing
+                        ? 'bg-amber-400 text-slate-950 border-amber-300'
+                        : 'bg-emerald-500 text-slate-950 border-emerald-400'
+                    }`}
+                  >
+                    {virtualSoundcheckStatus.playing ? (
+                      <>
+                        <Pause className="w-3.5 h-3.5" />
+                        <span>PAUSE</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3.5 h-3.5" />
+                        <span>PLAY SOUNDCHECK</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={virtualSoundcheckStatus.loadedCount === 0}
+                    onClick={stopVirtualSoundcheck}
+                    className="px-2.5 py-1.5 rounded console-btn-surface text-xs font-mono text-slate-200 flex items-center gap-1 disabled:opacity-40"
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                    <span>STOP</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setVirtualSoundcheckLoop(!virtualSoundcheckStatus.loop)}
+                    className={`px-2.5 py-1.5 rounded text-xs font-mono flex items-center gap-1 border ${
+                      virtualSoundcheckStatus.loop
+                        ? 'console-accent-active'
+                        : 'console-btn-surface text-slate-300'
+                    }`}
+                  >
+                    <Repeat className="w-3.5 h-3.5" />
+                    <span>LOOP</span>
+                  </button>
+                </div>
+
+                {vscStatusMessage && (
+                  <span className="text-[10px] font-mono text-sky-300 truncate">{vscStatusMessage}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 console-panel rounded p-2.5 flex flex-col gap-1.5 overflow-hidden">
+              <div className="text-[10px] font-mono text-slate-400 uppercase shrink-0">
+                Mount Recorded Multitrack Sessions (Zero-Latency Playback)
+              </div>
+              {multitrackSessions.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center text-xs font-mono text-slate-400 text-center px-4">
+                  No recorded multitrack sessions in memory yet. Record channels in Livestream Studio → Multitrack WAV, or click &ldquo;Load Stems (CH 1–N)&rdquo; above to import rehearsal stems.
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1">
+                  {multitrackSessions.map((sess) => (
+                    <div
+                      key={sess.id}
+                      className="console-well rounded px-2.5 py-2 flex items-center justify-between gap-2 border border-white/10"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-mono font-semibold text-slate-100 truncate">
+                          Session · {sess.tracks.length} Track(s) · {sess.durationSec.toFixed(1)}s
+                        </div>
+                        <div className="text-[10px] font-mono text-slate-400">
+                          {sess.sampleRateHz / 1000}kHz / {sess.bitDepth}-bit · Tap: {sess.tapPoint}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const res = await mountMultitrackSessionForSoundcheck(sess.id);
+                          setVscStatusMessage(
+                            res.ok
+                              ? `Mounted ${res.loadedCount} session track(s)`
+                              : res.error ?? 'Mount error'
+                          );
+                        }}
+                        className="px-2.5 py-1 rounded bg-emerald-500/20 border border-emerald-400/50 text-[10px] font-mono font-bold text-emerald-200 whitespace-nowrap shrink-0"
+                      >
+                        MOUNT TO DESK
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="lg:col-span-5 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2 min-h-0 overflow-hidden">
+            <div className="text-xs font-mono font-semibold text-sky-300 uppercase border-b border-white/10 pb-1.5">
+              Live Channel Return Meters (Post-DSP Verification)
+            </div>
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-1.5 content-start pr-1">
+              {channels.slice(0, 12).map((ch) => {
+                const cm = meters[ch.id];
+                return (
+                  <div
+                    key={ch.id}
+                    className="console-well rounded p-2 flex items-center justify-between gap-2 border border-white/10"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[9px] font-mono text-amber-300">
+                        CH {String(ch.number).padStart(2, '0')}
+                      </div>
+                      <div className="text-[10px] font-mono font-semibold text-slate-100 truncate">
+                        {ch.shortName}
+                      </div>
+                      <div className="text-[9px] font-mono tabular-nums text-slate-400">
+                        {cm?.signalPresent ? `${cm.rmsDbfs.toFixed(1)} dB` : 'IDLE'}
+                      </div>
+                    </div>
+                    <LedMeter peakDbfs={cm?.peakDbfs ?? -80} height={38} width={6} segments={6} />
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

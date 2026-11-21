@@ -54,8 +54,11 @@ export const MotorizedFader: React.FC<MotorizedFaderProps> = ({
   isMaster = false,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [pulseActive, setPulseActive] = useState(false);
+  const [editingDb, setEditingDb] = useState(false);
+  const [draftDb, setDraftDb] = useState('');
 
   const norm = dbToNormalized(valueDb);
   const capH = isMaster ? 36 : 30;
@@ -114,6 +117,34 @@ export const MotorizedFader: React.FC<MotorizedFaderProps> = ({
     triggerFeedback();
     onChange(0.0);
     onCommit?.(0.0);
+  };
+
+  const openInlineDbEdit = () => {
+    if (readOnlyReason) return;
+    setDraftDb(valueDb <= -74 ? '-75' : valueDb.toFixed(1));
+    setEditingDb(true);
+    window.setTimeout(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }, 0);
+  };
+
+  const commitInlineDbEdit = () => {
+    if (!editingDb) return;
+    setEditingDb(false);
+    const trimmed = draftDb.trim().toLowerCase();
+    if (!trimmed) return;
+    if (trimmed === '-inf' || trimmed === '-∞') {
+      onChange(MIN_DB);
+      onCommit?.(MIN_DB);
+      return;
+    }
+    const parsed = Number.parseFloat(trimmed);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = Math.round(Math.max(MIN_DB, Math.min(MAX_DB, parsed)) * 10) / 10;
+    triggerFeedback();
+    onChange(clamped);
+    onCommit?.(clamped);
   };
 
   const indicatorColor = isMaster
@@ -258,16 +289,47 @@ export const MotorizedFader: React.FC<MotorizedFaderProps> = ({
         </div>
       </div>
 
-      {/* Numeric OLED Readout */}
-      <div
-        className={`oled-display mt-1 px-1.5 py-0.5 rounded text-[10px] font-mono tabular-nums text-center ${
-          isMaster
-            ? 'w-16 text-amber-300 font-bold border-amber-500/40'
-            : 'w-13 text-slate-200'
-        }`}
-      >
-        {valueDb <= -74 ? '-∞ dB' : `${valueDb > 0 ? '+' : ''}${valueDb.toFixed(1)}`}
-      </div>
+      {/* Numeric OLED Readout — Click for Precision dB Numeric Entry */}
+      {editingDb ? (
+        <input
+          ref={inputRef}
+          type="text"
+          aria-label="Precision fader dB value"
+          value={draftDb}
+          onChange={(e) => setDraftDb(e.target.value)}
+          onBlur={commitInlineDbEdit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitInlineDbEdit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setEditingDb(false);
+            }
+          }}
+          className={`oled-display mt-1 px-1 py-0.5 rounded text-[10px] font-mono tabular-nums text-center focus:outline-none focus:ring-1 focus:ring-amber-400 ${
+            isMaster
+              ? 'w-16 text-amber-300 font-bold border-amber-400'
+              : 'w-13 text-amber-200 border-amber-400/70'
+          }`}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={openInlineDbEdit}
+          disabled={Boolean(readOnlyReason)}
+          title={readOnlyReason ?? 'Click to type exact dB (-75.0 to +10.0)'}
+          className={`oled-display mt-1 px-1.5 py-0.5 min-h-[22px] rounded text-[10px] font-mono tabular-nums text-center transition-colors ${
+            readOnlyReason ? 'cursor-not-allowed opacity-70' : 'cursor-text hover:border-amber-400/80'
+          } ${
+            isMaster
+              ? 'w-16 text-amber-300 font-bold border-amber-500/40'
+              : 'w-13 text-slate-200'
+          }`}
+        >
+          {valueDb <= -74 ? '-∞ dB' : `${valueDb > 0 ? '+' : ''}${valueDb.toFixed(1)}`}
+        </button>
+      )}
     </div>
   );
 };

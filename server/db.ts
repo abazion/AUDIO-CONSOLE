@@ -3,13 +3,17 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   AiProposal,
+  AutomationLane,
   BusNode,
   ChannelStrip,
   ConsoleSnapshotProfile,
   ConsoleThemeId,
+  DcaGroupState,
   DetectedHardwareDevice,
   FeedbackIncident,
+  FxSlotState,
   HardwareProfileId,
+  MatrixZone,
   SceneProfile,
   SoundCheckItem,
   SpeakerBand,
@@ -26,6 +30,9 @@ export interface ConsoleFactoryDefaults {
   speakers: SpeakerBand[];
   virtualCables: VirtualCableNode[];
   virtualDi: VirtualDiState;
+  dcaGroups: DcaGroupState[];
+  fxRack: FxSlotState[];
+  matrixZones: MatrixZone[];
   scenes: SceneProfile[];
   soundCheckItems: SoundCheckItem[];
 }
@@ -35,15 +42,26 @@ export interface PersistedConsoleStatePayload {
   workspaceTheme: ConsoleThemeId;
   activeSceneId: string;
   graphVersion: number;
+  revisionId?: number;
+  clientId?: string;
   channels: ChannelStrip[];
   buses: BusNode[];
   speakers: SpeakerBand[];
   virtualCables: VirtualCableNode[];
   virtualDi: VirtualDiState;
+  dcaGroups?: DcaGroupState[];
+  fxRack?: FxSlotState[];
+  matrixZones?: MatrixZone[];
   proposals: AiProposal[];
+  automationLanes?: AutomationLane[];
+  automationDurationSec?: number;
 }
 
 export interface BootstrapPayload extends PersistedConsoleStatePayload {
+  revisionId: number;
+  dcaGroups: DcaGroupState[];
+  fxRack: FxSlotState[];
+  matrixZones: MatrixZone[];
   scenes: SceneProfile[];
   snapshots: ConsoleSnapshotProfile[];
   hardwareInventory: DetectedHardwareDevice[];
@@ -72,12 +90,34 @@ function getDb(): DatabaseSync {
       theme_id TEXT NOT NULL DEFAULT 'obsidian-brass',
       active_scene_id TEXT NOT NULL,
       graph_version INTEGER NOT NULL,
+      revision_id INTEGER NOT NULL DEFAULT 1,
+      last_client_id TEXT NOT NULL DEFAULT '',
       channels_json TEXT NOT NULL,
       buses_json TEXT NOT NULL,
       speakers_json TEXT NOT NULL,
       virtual_cables_json TEXT NOT NULL DEFAULT '[]',
       virtual_di_json TEXT NOT NULL,
+      dca_groups_json TEXT NOT NULL DEFAULT '[]',
+      fx_rack_json TEXT NOT NULL DEFAULT '[]',
+      matrix_zones_json TEXT NOT NULL DEFAULT '[]',
       proposals_json TEXT NOT NULL,
+      automation_lanes_json TEXT NOT NULL DEFAULT '[]',
+      automation_duration_sec REAL NOT NULL DEFAULT 60,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_rows (
+      id TEXT PRIMARY KEY,
+      number INTEGER NOT NULL,
+      sort_order INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS bus_rows (
+      id TEXT PRIMARY KEY,
+      sort_order INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -155,14 +195,57 @@ function getDb(): DatabaseSync {
   if (!cols.some((c) => c.name === 'virtual_cables_json')) {
     db.exec(`ALTER TABLE console_state ADD COLUMN virtual_cables_json TEXT NOT NULL DEFAULT '[]';`);
   }
+  if (!cols.some((c) => c.name === 'automation_lanes_json')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN automation_lanes_json TEXT NOT NULL DEFAULT '[]';`);
+  }
+  if (!cols.some((c) => c.name === 'automation_duration_sec')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN automation_duration_sec REAL NOT NULL DEFAULT 60;`);
+  }
+  if (!cols.some((c) => c.name === 'revision_id')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN revision_id INTEGER NOT NULL DEFAULT 1;`);
+  }
+  if (!cols.some((c) => c.name === 'last_client_id')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN last_client_id TEXT NOT NULL DEFAULT '';`);
+  }
+  if (!cols.some((c) => c.name === 'dca_groups_json')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN dca_groups_json TEXT NOT NULL DEFAULT '[]';`);
+  }
+  if (!cols.some((c) => c.name === 'fx_rack_json')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN fx_rack_json TEXT NOT NULL DEFAULT '[]';`);
+  }
+  if (!cols.some((c) => c.name === 'matrix_zones_json')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN matrix_zones_json TEXT NOT NULL DEFAULT '[]';`);
+  }
 
   dbInstance = db;
   return db;
 }
 
+function syncNormalizedChannelRows(db: DatabaseSync, channels: ChannelStrip[], updatedAt: string): void {
+  db.prepare('DELETE FROM channel_rows').run();
+  const stmt = db.prepare(
+    `INSERT INTO channel_rows (id, number, sort_order, payload_json, updated_at)
+     VALUES (?, ?, ?, ?, ?)`
+  );
+  channels.forEach((ch, idx) => {
+    stmt.run(ch.id, ch.number, idx, JSON.stringify(ch), updatedAt);
+  });
+}
+
+function syncNormalizedBusRows(db: DatabaseSync, buses: BusNode[], updatedAt: string): void {
+  db.prepare('DELETE FROM bus_rows').run();
+  const stmt = db.prepare(
+    `INSERT INTO bus_rows (id, sort_order, payload_json, updated_at)
+     VALUES (?, ?, ?, ?)`
+  );
+  buses.forEach((bus, idx) => {
+    stmt.run(bus.id, idx, JSON.stringify(bus), updatedAt);
+  });
+}
+
 function seedIfEmpty(db: DatabaseSync, defaults: ConsoleFactoryDefaults): void {
-  const existingState = db.prepare('SELECT id FROM console_state WHERE id = 1').get() as
-    | { id: number }
+  const existingState = db.prepare('SELECT id, channels_json, buses_json FROM console_state WHERE id = 1').get() as
+    | { id: number; channels_json: string; buses_json: string }
     | undefined;
 
   const nowIso = new Date().toISOString();
@@ -170,23 +253,40 @@ function seedIfEmpty(db: DatabaseSync, defaults: ConsoleFactoryDefaults): void {
   if (!existingState) {
     db.prepare(
       `INSERT INTO console_state (
-        id, profile_id, theme_id, active_scene_id, graph_version,
-        channels_json, buses_json, speakers_json, virtual_cables_json, virtual_di_json, proposals_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        id, profile_id, theme_id, active_scene_id, graph_version, revision_id, last_client_id,
+        channels_json, buses_json, speakers_json, virtual_cables_json, virtual_di_json,
+        dca_groups_json, fx_rack_json, matrix_zones_json, proposals_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       1,
       defaults.profileId,
       'obsidian-brass',
       defaults.activeSceneId,
       1,
+      1,
+      'bootstrap',
       JSON.stringify(defaults.channels),
       JSON.stringify(defaults.buses),
       JSON.stringify(defaults.speakers),
       JSON.stringify(defaults.virtualCables),
       JSON.stringify(defaults.virtualDi),
+      JSON.stringify(defaults.dcaGroups),
+      JSON.stringify(defaults.fxRack),
+      JSON.stringify(defaults.matrixZones),
       JSON.stringify([]),
       nowIso
     );
+    syncNormalizedChannelRows(db, defaults.channels, nowIso);
+    syncNormalizedBusRows(db, defaults.buses, nowIso);
+  } else {
+    const chCount = (db.prepare('SELECT COUNT(*) as cnt FROM channel_rows').get() as { cnt: number }).cnt;
+    if (chCount === 0) {
+      syncNormalizedChannelRows(db, JSON.parse(existingState.channels_json) as ChannelStrip[], nowIso);
+    }
+    const busCount = (db.prepare('SELECT COUNT(*) as cnt FROM bus_rows').get() as { cnt: number }).cnt;
+    if (busCount === 0) {
+      syncNormalizedBusRows(db, JSON.parse(existingState.buses_json) as BusNode[], nowIso);
+    }
   }
 
   const sceneCountRow = db.prepare('SELECT COUNT(*) as cnt FROM scenes').get() as { cnt: number };
@@ -242,8 +342,9 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
 
   const row = db
     .prepare(
-      `SELECT profile_id, theme_id, active_scene_id, graph_version, channels_json, buses_json,
-              speakers_json, virtual_cables_json, virtual_di_json, proposals_json, updated_at
+      `SELECT profile_id, theme_id, active_scene_id, graph_version, revision_id, channels_json, buses_json,
+              speakers_json, virtual_cables_json, virtual_di_json, dca_groups_json, fx_rack_json,
+              matrix_zones_json, proposals_json, automation_lanes_json, automation_duration_sec, updated_at
        FROM console_state WHERE id = 1`
     )
     .get() as {
@@ -251,12 +352,18 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     theme_id: string;
     active_scene_id: string;
     graph_version: number;
+    revision_id: number;
     channels_json: string;
     buses_json: string;
     speakers_json: string;
     virtual_cables_json: string;
     virtual_di_json: string;
+    dca_groups_json: string;
+    fx_rack_json: string;
+    matrix_zones_json: string;
     proposals_json: string;
+    automation_lanes_json: string;
+    automation_duration_sec: number;
     updated_at: string;
   };
 
@@ -407,19 +514,47 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     message: e.message,
   }));
 
+  const channelRows = db
+    .prepare('SELECT payload_json FROM channel_rows ORDER BY sort_order ASC')
+    .all() as { payload_json: string }[];
+  const rawChannels =
+    channelRows.length > 0
+      ? channelRows.map((r) => JSON.parse(r.payload_json) as ChannelStrip)
+      : (JSON.parse(row.channels_json) as ChannelStrip[]);
+
   // Strip ephemeral live stream/file "active" state on fresh reload because WebAudio MediaStreams don't survive page reloads
-  const channels = (JSON.parse(row.channels_json) as ChannelStrip[]).map((ch) => ({
+  const channels = rawChannels.map((ch) => ({
     ...ch,
     sourceBinding: ch.sourceBinding
       ? { ...ch.sourceBinding, active: false }
       : { kind: 'none' as const, label: 'Unpatched · Click Source', active: false },
   }));
 
+  const busRows = db
+    .prepare('SELECT payload_json FROM bus_rows ORDER BY sort_order ASC')
+    .all() as { payload_json: string }[];
+  const buses =
+    busRows.length > 0
+      ? busRows.map((r) => JSON.parse(r.payload_json) as BusNode)
+      : (JSON.parse(row.buses_json) as BusNode[]);
+
   const parsedCables = JSON.parse(row.virtual_cables_json || '[]') as VirtualCableNode[];
   const virtualCables =
     Array.isArray(parsedCables) && parsedCables.length > 0
       ? parsedCables
       : defaults.virtualCables;
+
+  const parsedDca = JSON.parse(row.dca_groups_json || '[]') as DcaGroupState[];
+  const dcaGroups =
+    Array.isArray(parsedDca) && parsedDca.length > 0 ? parsedDca : defaults.dcaGroups;
+
+  const parsedFx = JSON.parse(row.fx_rack_json || '[]') as FxSlotState[];
+  const fxRack =
+    Array.isArray(parsedFx) && parsedFx.length > 0 ? parsedFx : defaults.fxRack;
+
+  const parsedMatrix = JSON.parse(row.matrix_zones_json || '[]') as MatrixZone[];
+  const matrixZones =
+    Array.isArray(parsedMatrix) && parsedMatrix.length > 0 ? parsedMatrix : defaults.matrixZones;
 
   const snapshotRows = db
     .prepare(
@@ -457,12 +592,21 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     workspaceTheme: (row.theme_id || 'obsidian-brass') as ConsoleThemeId,
     activeSceneId: row.active_scene_id,
     graphVersion: row.graph_version,
+    revisionId: row.revision_id ?? 1,
     channels,
-    buses: JSON.parse(row.buses_json) as BusNode[],
+    buses,
     speakers: JSON.parse(row.speakers_json) as SpeakerBand[],
     virtualCables,
     virtualDi: JSON.parse(row.virtual_di_json) as VirtualDiState,
+    dcaGroups,
+    fxRack,
+    matrixZones,
     proposals: JSON.parse(row.proposals_json) as AiProposal[],
+    automationLanes: JSON.parse(row.automation_lanes_json || '[]') as AutomationLane[],
+    automationDurationSec:
+      typeof row.automation_duration_sec === 'number' && row.automation_duration_sec >= 15
+        ? row.automation_duration_sec
+        : 60,
     scenes,
     snapshots,
     hardwareInventory,
@@ -474,29 +618,276 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
   };
 }
 
-export function saveConsoleState(payload: PersistedConsoleStatePayload): { updatedAt: string } {
+export function saveConsoleState(payload: PersistedConsoleStatePayload): {
+  ok: boolean;
+  conflict?: boolean;
+  revisionId: number;
+  updatedAt: string;
+} {
   const db = getDb();
   const updatedAt = new Date().toISOString();
-  db.prepare(
-    `UPDATE console_state
-     SET profile_id = ?, theme_id = ?, active_scene_id = ?, graph_version = ?,
-         channels_json = ?, buses_json = ?, speakers_json = ?,
-         virtual_cables_json = ?, virtual_di_json = ?, proposals_json = ?, updated_at = ?
-     WHERE id = 1`
-  ).run(
-    payload.profileId,
-    payload.workspaceTheme,
-    payload.activeSceneId,
-    payload.graphVersion,
-    JSON.stringify(payload.channels),
-    JSON.stringify(payload.buses),
-    JSON.stringify(payload.speakers),
-    JSON.stringify(payload.virtualCables ?? []),
-    JSON.stringify(payload.virtualDi),
-    JSON.stringify(payload.proposals),
-    updatedAt
-  );
-  return { updatedAt };
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    const current = db
+      .prepare('SELECT revision_id, last_client_id, updated_at FROM console_state WHERE id = 1')
+      .get() as { revision_id: number; last_client_id: string; updated_at: string } | undefined;
+    const currentRev = current?.revision_id ?? 1;
+    if (
+      typeof payload.revisionId === 'number' &&
+      payload.revisionId < currentRev &&
+      payload.clientId &&
+      current?.last_client_id &&
+      payload.clientId !== current.last_client_id
+    ) {
+      db.exec('ROLLBACK;');
+      return { ok: false, conflict: true, revisionId: currentRev, updatedAt: current.updated_at };
+    }
+    const nextRev = currentRev + 1;
+    db.prepare(
+      `UPDATE console_state
+       SET profile_id = ?, theme_id = ?, active_scene_id = ?, graph_version = ?,
+           revision_id = ?, last_client_id = ?,
+           channels_json = ?, buses_json = ?, speakers_json = ?,
+           virtual_cables_json = ?, virtual_di_json = ?,
+           dca_groups_json = COALESCE(?, dca_groups_json),
+           fx_rack_json = COALESCE(?, fx_rack_json),
+           matrix_zones_json = COALESCE(?, matrix_zones_json),
+           proposals_json = ?, automation_lanes_json = ?, automation_duration_sec = ?, updated_at = ?
+       WHERE id = 1`
+    ).run(
+      payload.profileId,
+      payload.workspaceTheme,
+      payload.activeSceneId,
+      payload.graphVersion,
+      nextRev,
+      payload.clientId ?? '',
+      JSON.stringify(payload.channels),
+      JSON.stringify(payload.buses),
+      JSON.stringify(payload.speakers),
+      JSON.stringify(payload.virtualCables ?? []),
+      JSON.stringify(payload.virtualDi),
+      payload.dcaGroups ? JSON.stringify(payload.dcaGroups) : null,
+      payload.fxRack ? JSON.stringify(payload.fxRack) : null,
+      payload.matrixZones ? JSON.stringify(payload.matrixZones) : null,
+      JSON.stringify(payload.proposals),
+      JSON.stringify(payload.automationLanes ?? []),
+      typeof payload.automationDurationSec === 'number' ? payload.automationDurationSec : 60,
+      updatedAt
+    );
+    syncNormalizedChannelRows(db, payload.channels, updatedAt);
+    syncNormalizedBusRows(db, payload.buses, updatedAt);
+    db.exec('COMMIT;');
+    return { ok: true, revisionId: nextRev, updatedAt };
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
+}
+
+export function patchChannelAtomic(
+  channelId: string,
+  patch: Partial<ChannelStrip>,
+  opts?: { expectedRevisionId?: number; clientId?: string }
+): {
+  ok: boolean;
+  conflict?: boolean;
+  notFound?: boolean;
+  revisionId: number;
+  graphVersion?: number;
+  channel?: ChannelStrip;
+  updatedAt: string;
+} {
+  const db = getDb();
+  const updatedAt = new Date().toISOString();
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    const stateRow = db
+      .prepare('SELECT revision_id, graph_version, last_client_id, channels_json, updated_at FROM console_state WHERE id = 1')
+      .get() as
+      | { revision_id: number; graph_version: number; last_client_id: string; channels_json: string; updated_at: string }
+      | undefined;
+    if (!stateRow) {
+      db.exec('ROLLBACK;');
+      return { ok: false, notFound: true, revisionId: 0, updatedAt };
+    }
+    if (
+      typeof opts?.expectedRevisionId === 'number' &&
+      opts.expectedRevisionId < stateRow.revision_id &&
+      opts.clientId &&
+      stateRow.last_client_id &&
+      opts.clientId !== stateRow.last_client_id
+    ) {
+      db.exec('ROLLBACK;');
+      return { ok: false, conflict: true, revisionId: stateRow.revision_id, updatedAt: stateRow.updated_at };
+    }
+
+    const row = db
+      .prepare('SELECT payload_json FROM channel_rows WHERE id = ?')
+      .get(channelId) as { payload_json: string } | undefined;
+
+    const channels = JSON.parse(stateRow.channels_json) as ChannelStrip[];
+    const idx = channels.findIndex((c) => c.id === channelId);
+    if (!row && idx === -1) {
+      db.exec('ROLLBACK;');
+      return { ok: false, notFound: true, revisionId: stateRow.revision_id, updatedAt: stateRow.updated_at };
+    }
+
+    const base: ChannelStrip = row ? (JSON.parse(row.payload_json) as ChannelStrip) : channels[idx];
+    const merged: ChannelStrip = {
+      ...base,
+      ...patch,
+      id: base.id,
+      dynamics: patch.dynamics ? { ...base.dynamics, ...patch.dynamics } : base.dynamics,
+      sends: patch.sends ? { ...base.sends, ...patch.sends } : base.sends,
+    };
+
+    if (idx !== -1) {
+      channels[idx] = merged;
+    }
+
+    const nextRev = stateRow.revision_id + 1;
+    const nextGraphVersion = stateRow.graph_version + 1;
+
+    db.prepare(
+      `INSERT INTO channel_rows (id, number, sort_order, payload_json, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`
+    ).run(merged.id, merged.number, idx >= 0 ? idx : channels.length, JSON.stringify(merged), updatedAt);
+
+    db.prepare(
+      `UPDATE console_state
+       SET revision_id = ?, graph_version = ?, last_client_id = ?, channels_json = ?, updated_at = ?
+       WHERE id = 1`
+    ).run(nextRev, nextGraphVersion, opts?.clientId ?? '', JSON.stringify(channels), updatedAt);
+
+    db.exec('COMMIT;');
+    return {
+      ok: true,
+      revisionId: nextRev,
+      graphVersion: nextGraphVersion,
+      channel: merged,
+      updatedAt,
+    };
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
+}
+
+export function patchBusAtomic(
+  busId: string,
+  patch: Partial<BusNode>,
+  opts?: { expectedRevisionId?: number; clientId?: string }
+): {
+  ok: boolean;
+  conflict?: boolean;
+  notFound?: boolean;
+  revisionId: number;
+  graphVersion?: number;
+  bus?: BusNode;
+  updatedAt: string;
+} {
+  const db = getDb();
+  const updatedAt = new Date().toISOString();
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    const stateRow = db
+      .prepare('SELECT revision_id, graph_version, last_client_id, buses_json, updated_at FROM console_state WHERE id = 1')
+      .get() as
+      | { revision_id: number; graph_version: number; last_client_id: string; buses_json: string; updated_at: string }
+      | undefined;
+    if (!stateRow) {
+      db.exec('ROLLBACK;');
+      return { ok: false, notFound: true, revisionId: 0, updatedAt };
+    }
+    if (
+      typeof opts?.expectedRevisionId === 'number' &&
+      opts.expectedRevisionId < stateRow.revision_id &&
+      opts.clientId &&
+      stateRow.last_client_id &&
+      opts.clientId !== stateRow.last_client_id
+    ) {
+      db.exec('ROLLBACK;');
+      return { ok: false, conflict: true, revisionId: stateRow.revision_id, updatedAt: stateRow.updated_at };
+    }
+
+    const row = db
+      .prepare('SELECT payload_json FROM bus_rows WHERE id = ?')
+      .get(busId) as { payload_json: string } | undefined;
+
+    const buses = JSON.parse(stateRow.buses_json) as BusNode[];
+    const idx = buses.findIndex((b) => b.id === busId);
+    if (!row && idx === -1) {
+      db.exec('ROLLBACK;');
+      return { ok: false, notFound: true, revisionId: stateRow.revision_id, updatedAt: stateRow.updated_at };
+    }
+
+    const base: BusNode = row ? (JSON.parse(row.payload_json) as BusNode) : buses[idx];
+    const merged: BusNode = { ...base, ...patch, id: base.id };
+    if (idx !== -1) {
+      buses[idx] = merged;
+    }
+
+    const nextRev = stateRow.revision_id + 1;
+    const nextGraphVersion = stateRow.graph_version + 1;
+
+    db.prepare(
+      `INSERT INTO bus_rows (id, sort_order, payload_json, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`
+    ).run(merged.id, idx >= 0 ? idx : buses.length, JSON.stringify(merged), updatedAt);
+
+    db.prepare(
+      `UPDATE console_state
+       SET revision_id = ?, graph_version = ?, last_client_id = ?, buses_json = ?, updated_at = ?
+       WHERE id = 1`
+    ).run(nextRev, nextGraphVersion, opts?.clientId ?? '', JSON.stringify(buses), updatedAt);
+
+    db.exec('COMMIT;');
+    return {
+      ok: true,
+      revisionId: nextRev,
+      graphVersion: nextGraphVersion,
+      bus: merged,
+      updatedAt,
+    };
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
+}
+
+export function patchDcaGroupAtomic(
+  dcaId: DcaGroupState['id'],
+  patch: Partial<DcaGroupState>,
+  defaults: DcaGroupState[],
+  clientId?: string
+): {
+  ok: boolean;
+  revisionId: number;
+  dcaGroups: DcaGroupState[];
+  updatedAt: string;
+} {
+  const db = getDb();
+  const updatedAt = new Date().toISOString();
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    const stateRow = db
+      .prepare('SELECT revision_id, dca_groups_json FROM console_state WHERE id = 1')
+      .get() as { revision_id: number; dca_groups_json: string } | undefined;
+    const parsed = JSON.parse(stateRow?.dca_groups_json || '[]') as DcaGroupState[];
+    const list = Array.isArray(parsed) && parsed.length > 0 ? parsed : defaults.map((d) => ({ ...d }));
+    const updatedList = list.map((d) => (d.id === dcaId ? { ...d, ...patch, id: d.id } : d));
+    const nextRev = (stateRow?.revision_id ?? 1) + 1;
+    db.prepare(
+      `UPDATE console_state SET revision_id = ?, last_client_id = ?, dca_groups_json = ?, updated_at = ? WHERE id = 1`
+    ).run(nextRev, clientId ?? '', JSON.stringify(updatedList), updatedAt);
+    db.exec('COMMIT;');
+    return { ok: true, revisionId: nextRev, dcaGroups: updatedList, updatedAt };
+  } catch (err) {
+    db.exec('ROLLBACK;');
+    throw err;
+  }
 }
 
 export function syncHardwareInventory(devices: DetectedHardwareDevice[]): void {
@@ -655,6 +1046,8 @@ export function resetFactoryData(defaults: ConsoleFactoryDefaults): BootstrapPay
   db.exec('BEGIN;');
   try {
     db.prepare('DELETE FROM console_state').run();
+    db.prepare('DELETE FROM channel_rows').run();
+    db.prepare('DELETE FROM bus_rows').run();
     db.prepare('DELETE FROM scenes').run();
     db.prepare('DELETE FROM feedback_incidents').run();
     db.prepare('DELETE FROM sound_check_items').run();

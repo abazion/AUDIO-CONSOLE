@@ -54,7 +54,11 @@ export const DspEqWorkspace: React.FC = () => {
     autoCalibrateChannel,
     globalDspBypass,
     toggleGlobalDspBypass,
+    operatorRole,
   } = useAudioConsole();
+
+  const isVolunteer = operatorRole === 'volunteer';
+  const volunteerLockReason = isVolunteer ? 'Locked for Volunteer role' : undefined;
 
   const chIdx = Math.max(0, channels.findIndex((c) => c.id === selectedChannelId));
   const ch = channels[chIdx] ?? channels[0];
@@ -68,6 +72,7 @@ export const DspEqWorkspace: React.FC = () => {
   const [abCompareB, setAbCompareB] = useState<boolean>(false);
   const [draggingBandIdx, setDraggingBandIdx] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const rtaPeakHoldRef = useRef<number[]>(new Array(64).fill(-80));
 
   const isBusMode = targetDomain === 'bus';
   const m = meters[isBusMode ? activeBus.id : ch.id];
@@ -191,15 +196,25 @@ export const DspEqWorkspace: React.FC = () => {
     ch.geqBands,
   ]);
 
-  const spectrumPath = useMemo(() => {
+  const { spectrumPath, rtaPeakPath } = useMemo(() => {
     const pts: string[] = [];
+    const peakPts: string[] = [];
+    const holds = rtaPeakHoldRef.current;
     spectrum.forEach((db, i) => {
+      const prev = holds[i] ?? -80;
+      const nextHold = db >= prev ? db : Math.max(-80, prev - 0.35);
+      holds[i] = nextHold;
       const freq = 20 * Math.pow(1000, i / 63);
       const x = freqToX(freq, svgW);
       const y = svgH - Math.max(0, Math.min(1, (db + 72) / 72)) * (svgH - 18);
+      const yPk = svgH - Math.max(0, Math.min(1, (nextHold + 72) / 72)) * (svgH - 18);
       pts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+      peakPts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${yPk.toFixed(1)}`);
     });
-    return `${pts.join(' ')} L ${svgW} ${svgH} L 0 ${svgH} Z`;
+    return {
+      spectrumPath: `${pts.join(' ')} L ${svgW} ${svgH} L 0 ${svgH} Z`,
+      rtaPeakPath: peakPts.join(' '),
+    };
   }, [spectrum]);
 
   const handleSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -491,7 +506,7 @@ export const DspEqWorkspace: React.FC = () => {
                   return (
                     <g key={hz}>
                       <line x1={x} y1={0} x2={x} y2={svgH} stroke="rgba(255,255,255,0.06)" strokeWidth="1" />
-                      <text x={x + 3} y={svgH - 6} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">
+                      <text x={x + 3} y={svgH - 6} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono">
                         {hz >= 1000 ? `${hz / 1000}k` : hz}
                       </text>
                     </g>
@@ -509,17 +524,18 @@ export const DspEqWorkspace: React.FC = () => {
                         stroke={db === 0 ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.06)'}
                         strokeWidth="1"
                       />
-                      <text x={6} y={y - 3} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">
+                      <text x={6} y={y - 3} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono">
                         {db > 0 ? `+${db}` : db} dB
                       </text>
                     </g>
                   );
                 })}
                 <path d={spectrumPath} fill="rgba(56, 189, 248, 0.14)" stroke="rgba(56, 189, 248, 0.35)" strokeWidth="1" />
+                <path d={rtaPeakPath} fill="none" stroke="rgba(52, 211, 153, 0.65)" strokeWidth="1.2" strokeDasharray="3 2" />
                 <path
                   d={eqCurvePath}
                   fill="none"
-                  stroke={activeEqEnabled || (!isBusMode && ch.geqEnabled) ? '#f59e0b' : '#64748b'}
+                  stroke={activeEqEnabled || (!isBusMode && ch.geqEnabled) ? '#f59e0b' : '#94a3b8'}
                   strokeWidth="2.5"
                 />
                 {activeBands.map((band, idx) => {
@@ -622,9 +638,10 @@ export const DspEqWorkspace: React.FC = () => {
               {activeBand && (
                 <>
                   <select
+                    disabled={isVolunteer}
                     value={activeBand.shape}
                     onChange={(e) => updateBand(clampedBandIdx, { shape: e.target.value as FilterShape })}
-                    className="console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200"
+                    className="console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200 disabled:opacity-50"
                   >
                     <option value="bell">Bell</option>
                     <option value="low-shelf">Low Shelf</option>
@@ -637,14 +654,31 @@ export const DspEqWorkspace: React.FC = () => {
                     size="xs"
                     color="emerald"
                     active={activeBand.enabled}
+                    manualOnlyReason={volunteerLockReason}
                     onClick={() => updateBand(clampedBandIdx, { enabled: !activeBand.enabled })}
                   />
+                  {!isBusMode && (
+                    <ConsoleButton
+                      label={activeBand.dynamicEnabled ? 'DYN EQ ON' : 'DYN EQ'}
+                      size="xs"
+                      color="cyan"
+                      active={Boolean(activeBand.dynamicEnabled)}
+                      manualOnlyReason={volunteerLockReason}
+                      onClick={() =>
+                        updateBand(clampedBandIdx, {
+                          dynamicEnabled: !activeBand.dynamicEnabled,
+                          dynamicThresholdDb: activeBand.dynamicThresholdDb ?? -24,
+                          dynamicRatio: activeBand.dynamicRatio ?? 2.5,
+                        })
+                      }
+                    />
+                  )}
                 </>
               )}
             </div>
 
             {activeBand && (
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3 flex-wrap">
                 {!isBusMode && (
                   <RotaryKnob
                     label="HPF"
@@ -656,6 +690,7 @@ export const DspEqWorkspace: React.FC = () => {
                     size={38}
                     accentColor="amber"
                     disabled={!ch.hpfEnabled}
+                    manualOnlyReason={volunteerLockReason}
                     onChange={(v) => updateChannel(ch.id, { hpfFreqHz: v })}
                   />
                 )}
@@ -667,6 +702,7 @@ export const DspEqWorkspace: React.FC = () => {
                   step={10}
                   size={38}
                   accentColor="cyan"
+                  manualOnlyReason={volunteerLockReason}
                   formatValue={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)}k` : `${Math.round(v)}Hz`)}
                   onChange={(v) => updateBand(clampedBandIdx, { freqHz: v })}
                 />
@@ -680,6 +716,7 @@ export const DspEqWorkspace: React.FC = () => {
                   unit="dB"
                   size={38}
                   accentColor="emerald"
+                  manualOnlyReason={volunteerLockReason}
                   onChange={(v) => updateBand(clampedBandIdx, { gainDb: v })}
                 />
                 <RotaryKnob
@@ -690,9 +727,38 @@ export const DspEqWorkspace: React.FC = () => {
                   step={0.1}
                   size={38}
                   accentColor="rose"
+                  manualOnlyReason={volunteerLockReason}
                   formatValue={(v) => v.toFixed(1)}
                   onChange={(v) => updateBand(clampedBandIdx, { q: v })}
                 />
+                {!isBusMode && activeBand.dynamicEnabled && (
+                  <>
+                    <RotaryKnob
+                      label="DYN THR"
+                      value={activeBand.dynamicThresholdDb ?? -24}
+                      min={-48}
+                      max={0}
+                      step={1}
+                      unit="dB"
+                      size={38}
+                      accentColor="cyan"
+                      manualOnlyReason={volunteerLockReason}
+                      onChange={(v) => updateBand(clampedBandIdx, { dynamicThresholdDb: v })}
+                    />
+                    <RotaryKnob
+                      label="DYN RAT"
+                      value={activeBand.dynamicRatio ?? 2.5}
+                      min={1.2}
+                      max={10}
+                      step={0.2}
+                      size={38}
+                      accentColor="amber"
+                      manualOnlyReason={volunteerLockReason}
+                      formatValue={(v) => `${v.toFixed(1)}:1`}
+                      onChange={(v) => updateBand(clampedBandIdx, { dynamicRatio: v })}
+                    />
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -745,19 +811,20 @@ export const DspEqWorkspace: React.FC = () => {
         </div>
       )}
 
-      {/* TAB 3: DYNAMICS, GATE, COMP & DELAY */}
+      {/* TAB 3: DYNAMICS, GATE A/H/R, SC-HPF, PARALLEL MIX, DE-ESSER & DELAY */}
       {eqModuleTab === 'dynamics' && !isBusMode && (
-        <div className="flex-1 min-h-0 console-chassis rounded-lg border p-4 flex flex-col justify-between gap-4 overflow-hidden">
-          <div className="flex items-center justify-between border-b border-white/10 pb-2">
+        <div className="flex-1 min-h-0 console-chassis rounded-lg border p-3.5 flex flex-col justify-between gap-2.5 overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2 shrink-0">
             <span className="font-mono text-xs font-semibold text-emerald-300 uppercase">
-              Channel Dynamics Processor &amp; Phase Delay · CH {String(ch.number).padStart(2, '0')} {ch.name}
+              Channel Dynamics Processor, Sidechain &amp; De-Esser · CH {String(ch.number).padStart(2, '0')} {ch.name}
             </span>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <ConsoleButton
                 label="HPF"
                 size="xs"
                 color="amber"
                 active={ch.hpfEnabled}
+                manualOnlyReason={volunteerLockReason}
                 onClick={() => updateChannel(ch.id, { hpfEnabled: !ch.hpfEnabled })}
               />
               <ConsoleButton
@@ -765,6 +832,7 @@ export const DspEqWorkspace: React.FC = () => {
                 size="xs"
                 color="amber"
                 active={ch.dynamics.gateEnabled}
+                manualOnlyReason={volunteerLockReason}
                 onClick={() =>
                   updateChannel(ch.id, {
                     dynamics: { ...ch.dynamics, gateEnabled: !ch.dynamics.gateEnabled },
@@ -776,9 +844,22 @@ export const DspEqWorkspace: React.FC = () => {
                 size="xs"
                 color="emerald"
                 active={ch.dynamics.compEnabled}
+                manualOnlyReason={volunteerLockReason}
                 onClick={() =>
                   updateChannel(ch.id, {
                     dynamics: { ...ch.dynamics, compEnabled: !ch.dynamics.compEnabled },
+                  })
+                }
+              />
+              <ConsoleButton
+                label="DE-ESSER"
+                size="xs"
+                color="cyan"
+                active={Boolean(ch.dynamics.deEsserEnabled)}
+                manualOnlyReason={volunteerLockReason}
+                onClick={() =>
+                  updateChannel(ch.id, {
+                    dynamics: { ...ch.dynamics, deEsserEnabled: !ch.dynamics.deEsserEnabled },
                   })
                 }
               />
@@ -787,6 +868,7 @@ export const DspEqWorkspace: React.FC = () => {
                 size="xs"
                 color="crimson"
                 active={ch.dynamics.limiterEnabled}
+                manualOnlyReason={volunteerLockReason}
                 onClick={() =>
                   updateChannel(ch.id, {
                     dynamics: { ...ch.dynamics, limiterEnabled: !ch.dynamics.limiterEnabled },
@@ -796,7 +878,7 @@ export const DspEqWorkspace: React.FC = () => {
             </div>
           </div>
 
-          <div className="console-panel rounded-md p-5 grid grid-cols-3 sm:grid-cols-6 gap-4 items-center flex-1">
+          <div className="flex-1 min-h-0 console-panel rounded-md p-3 grid grid-cols-3 sm:grid-cols-6 gap-3 items-center overflow-y-auto">
             <RotaryKnob
               label="GATE THR"
               value={ch.dynamics.gateThresholdDb}
@@ -804,13 +886,89 @@ export const DspEqWorkspace: React.FC = () => {
               max={-10}
               step={1}
               unit="dB"
-              size={58}
+              size={46}
               accentColor="amber"
               disabled={!ch.dynamics.gateEnabled}
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) =>
                 updateChannel(ch.id, { dynamics: { ...ch.dynamics, gateThresholdDb: v } })
               }
             />
+            <RotaryKnob
+              label="GATE ATK"
+              value={ch.dynamics.gateAttackMs ?? 2}
+              min={0.5}
+              max={50}
+              step={0.5}
+              unit="ms"
+              size={46}
+              accentColor="amber"
+              disabled={!ch.dynamics.gateEnabled}
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, gateAttackMs: v } })
+              }
+            />
+            <RotaryKnob
+              label="GATE HOLD"
+              value={ch.dynamics.gateHoldMs ?? 80}
+              min={10}
+              max={500}
+              step={10}
+              unit="ms"
+              size={46}
+              accentColor="amber"
+              disabled={!ch.dynamics.gateEnabled}
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, gateHoldMs: v } })
+              }
+            />
+            <RotaryKnob
+              label="GATE REL"
+              value={ch.dynamics.gateReleaseMs ?? 160}
+              min={20}
+              max={1000}
+              step={10}
+              unit="ms"
+              size={46}
+              accentColor="amber"
+              disabled={!ch.dynamics.gateEnabled}
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, gateReleaseMs: v } })
+              }
+            />
+            <RotaryKnob
+              label="SC HPF"
+              value={ch.dynamics.sidechainHpfHz ?? 80}
+              min={20}
+              max={400}
+              step={5}
+              unit="Hz"
+              size={46}
+              accentColor="cyan"
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, sidechainHpfHz: v } })
+              }
+            />
+            <RotaryKnob
+              label="PAR MIX"
+              value={ch.dynamics.parallelMixPct ?? 100}
+              min={0}
+              max={100}
+              step={5}
+              unit="%"
+              size={46}
+              accentColor="emerald"
+              disabled={!ch.dynamics.compEnabled}
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, parallelMixPct: v } })
+              }
+            />
+
             <RotaryKnob
               label="COMP THR"
               value={ch.dynamics.compThresholdDb}
@@ -818,9 +976,10 @@ export const DspEqWorkspace: React.FC = () => {
               max={0}
               step={0.5}
               unit="dB"
-              size={58}
+              size={46}
               accentColor="emerald"
               disabled={!ch.dynamics.compEnabled}
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) =>
                 updateChannel(ch.id, { dynamics: { ...ch.dynamics, compThresholdDb: v } })
               }
@@ -832,22 +991,24 @@ export const DspEqWorkspace: React.FC = () => {
               max={12}
               step={0.2}
               unit=":1"
-              size={58}
+              size={46}
               accentColor="emerald"
               disabled={!ch.dynamics.compEnabled}
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) =>
                 updateChannel(ch.id, { dynamics: { ...ch.dynamics, compRatio: v } })
               }
             />
             <RotaryKnob
-              label="ATTACK"
+              label="COMP ATK"
               value={ch.dynamics.compAttackMs}
               min={1}
               max={80}
               step={1}
               unit="ms"
-              size={58}
+              size={46}
               accentColor="cyan"
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) =>
                 updateChannel(ch.id, { dynamics: { ...ch.dynamics, compAttackMs: v } })
               }
@@ -859,10 +1020,41 @@ export const DspEqWorkspace: React.FC = () => {
               max={12}
               step={0.5}
               unit="dB"
-              size={58}
+              size={46}
               accentColor="amber"
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) =>
                 updateChannel(ch.id, { dynamics: { ...ch.dynamics, compMakeupDb: v } })
+              }
+            />
+            <RotaryKnob
+              label="DE-ESS FRQ"
+              value={ch.dynamics.deEsserFreqHz ?? 6200}
+              min={3000}
+              max={10000}
+              step={100}
+              size={46}
+              accentColor="cyan"
+              disabled={!ch.dynamics.deEsserEnabled}
+              manualOnlyReason={volunteerLockReason}
+              formatValue={(v) => `${(v / 1000).toFixed(1)}k`}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, deEsserFreqHz: v } })
+              }
+            />
+            <RotaryKnob
+              label="DE-ESS THR"
+              value={ch.dynamics.deEsserThresholdDb ?? -22}
+              min={-48}
+              max={0}
+              step={1}
+              unit="dB"
+              size={46}
+              accentColor="rose"
+              disabled={!ch.dynamics.deEsserEnabled}
+              manualOnlyReason={volunteerLockReason}
+              onChange={(v) =>
+                updateChannel(ch.id, { dynamics: { ...ch.dynamics, deEsserThresholdDb: v } })
               }
             />
             <RotaryKnob
@@ -872,13 +1064,14 @@ export const DspEqWorkspace: React.FC = () => {
               max={50}
               step={0.2}
               unit="ms"
-              size={58}
+              size={46}
               accentColor="rose"
+              manualOnlyReason={volunteerLockReason}
               onChange={(v) => updateChannel(ch.id, { delayMs: v })}
             />
           </div>
 
-          <div className="oled-display rounded p-3 flex items-center justify-between text-xs font-mono">
+          <div className="oled-display rounded p-2.5 flex items-center justify-between text-xs font-mono shrink-0">
             <span>{abCompareB ? 'Slot B Comparison Snapshot' : 'Slot A Active Real-Time Chain'}</span>
             <span className="flex items-center gap-1.5 text-sky-300">
               <ArrowLeftRight className="w-3.5 h-3.5" />

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Activity,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -30,7 +31,14 @@ import { ConsoleButton } from '../hardware/ConsoleButton';
 import { ScribbleStrip } from '../hardware/ScribbleStrip';
 import { GraphicEq31Band } from '../hardware/GraphicEq31Band';
 import { HorizontalSlider } from '../hardware/HorizontalSlider';
-import type { ChannelStrip, CrossoverFamily, SourceCategory } from '../../engine/types';
+import { ChannelAutomationLanes } from '../hardware/ChannelAutomationLanes';
+import type {
+  ChannelStrip,
+  CrossoverFamily,
+  DcaGroupId,
+  SoloMode,
+  SourceCategory,
+} from '../../engine/types';
 
 const SPK_COLORS = ['#a78bfa', '#f59e0b', '#38bdf8', '#10b981', '#f43f5e'];
 
@@ -128,14 +136,34 @@ export const LiveSoundConsole: React.FC = () => {
     systemIntelligence,
     autoCalibrateChannel,
     globalDspBypass,
+    dcaGroups,
+    updateDcaGroup,
+    activeDcaSpill,
+    setActiveDcaSpill,
+    soloMode,
+    setSoloMode,
+    clearAllSolos,
+    fxRack,
+    updateFxSlot,
+    matrixZones,
+    updateMatrixZone,
+    updateMatrixZoneSource,
+    operatorRole,
   } = useAudioConsole();
 
-  const [consoleModule, setConsoleModule] = useState<'desk' | 'eq31' | 'crossover' | 'dynamics'>('desk');
+  const isVolunteer = operatorRole === 'volunteer';
+  const volunteerLockReason = isVolunteer ? 'Locked for Volunteer role (switch to FOH / Sys Tech)' : undefined;
+
+  const [consoleModule, setConsoleModule] = useState<
+    'desk' | 'eq31' | 'crossover' | 'dynamics' | 'fxrack' | 'matrix'
+  >('desk');
   const [focusTab, setFocusTab] = useState<'eq' | 'crossover' | 'preamp'>('eq');
   const [bankFilter, setBankFilter] = useState<'all' | 'vox' | 'band' | 'drums-choir'>('all');
+  const [bankSize, setBankSize] = useState<6 | 8 | 12 | 16 | 'all'>(6);
   const [bankPageIdx, setBankPageIdx] = useState<number>(0);
   const [expandedStripIds, setExpandedStripIds] = useState<Record<string, boolean>>({});
   const [expandAllStrips, setExpandAllStrips] = useState<boolean>(false);
+  const [showAutomationLanes, setShowAutomationLanes] = useState<boolean>(true);
   const [addInputOpen, setAddInputOpen] = useState<boolean>(false);
   const [newInputName, setNewInputName] = useState<string>('');
   const [newInputCat, setNewInputCat] = useState<SourceCategory>('media');
@@ -151,19 +179,26 @@ export const LiveSoundConsole: React.FC = () => {
   const isManualPreamp = primaryCaps?.preampGain === 'manual';
   const isManualPhantom = primaryCaps?.phantomPower === 'manual';
 
-  const totalPages = Math.max(1, Math.ceil(channels.length / 6));
+  const dcaFilteredChannels = useMemo(() => {
+    if (!activeDcaSpill) return channels;
+    return channels.filter((ch) => ch.dcaGroup === activeDcaSpill);
+  }, [channels, activeDcaSpill]);
+
+  const effectiveBankSize = bankSize === 'all' ? Math.max(1, dcaFilteredChannels.length) : bankSize;
+  const totalPages = Math.max(1, Math.ceil(dcaFilteredChannels.length / effectiveBankSize));
   const safePageIdx = Math.min(bankPageIdx, totalPages - 1);
 
-  // Dynamic 6-strip paged channel view supporting unlimited channels
+  // Dynamic 6/8/12/16/ALL paged channel view supporting DCA Spill & unlimited channels
   const visibleChannels = useMemo(() => {
+    const base = dcaFilteredChannels;
     if (bankFilter === 'all') {
-      const start = safePageIdx * 6;
-      return channels.slice(start, start + 6);
+      const start = safePageIdx * effectiveBankSize;
+      return base.slice(start, start + effectiveBankSize);
     }
     if (bankFilter === 'vox')
-      return channels.filter((ch) => ch.category === 'pulpit' || ch.category === 'vocal').slice(0, 6);
+      return base.filter((ch) => ch.category === 'pulpit' || ch.category === 'vocal').slice(0, effectiveBankSize);
     if (bankFilter === 'band')
-      return channels
+      return base
         .filter(
           (ch) =>
             ch.category === 'acoustic' ||
@@ -171,11 +206,11 @@ export const LiveSoundConsole: React.FC = () => {
             ch.category === 'bass' ||
             ch.category === 'keys'
         )
-        .slice(0, 6);
-    return channels
+        .slice(0, effectiveBankSize);
+    return base
       .filter((ch) => ch.category === 'drums' || ch.category === 'choir' || ch.category === 'media')
-      .slice(0, 6);
-  }, [channels, bankFilter, safePageIdx]);
+      .slice(0, effectiveBankSize);
+  }, [dcaFilteredChannels, bankFilter, safePageIdx, effectiveBankSize]);
 
   const toggleStripExpanded = (channelId: string) => {
     setExpandedStripIds((prev) => ({
@@ -199,8 +234,9 @@ export const LiveSoundConsole: React.FC = () => {
     const created = addChannel(newInputName.trim() || undefined, newInputCat);
     setNewInputName('');
     setAddInputOpen(false);
+    setActiveDcaSpill(null);
     setBankFilter('all');
-    const newPage = Math.floor(channels.length / 6);
+    const newPage = Math.floor(channels.length / effectiveBankSize);
     setBankPageIdx(newPage);
     setSelectedChannelId(created.id);
   };
@@ -364,23 +400,28 @@ export const LiveSoundConsole: React.FC = () => {
   const selectChannelWithBank = (id: string) => {
     const idx = channels.findIndex((c) => c.id === id);
     if (idx >= 0) {
+      setActiveDcaSpill(null);
       setBankFilter('all');
-      setBankPageIdx(Math.floor(idx / 6));
+      setBankPageIdx(Math.floor(idx / effectiveBankSize));
     }
     setSelectedChannelId(id);
   };
+
+  const anyChannelSolo = channels.some((c) => c.solo);
 
   return (
     <div className="h-full min-h-0 flex flex-col p-2.5 gap-2 overflow-hidden">
       {/* Unified Single-Row Tabbed Console Toolbar (Zero Vertical/Horizontal Scroll) */}
       <div className="console-panel rounded-md px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         {/* In-Place Module Switcher Tabs */}
-        <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
+        <div className="console-module-rack p-0.5 rounded flex items-center gap-1 overflow-x-auto no-scrollbar">
           {[
             { id: 'desk', label: 'MIX DESK + EQ', icon: SlidersHorizontal },
             { id: 'eq31', label: '31-BAND EQ', icon: Waves },
-            { id: 'crossover', label: 'ACTIVE CROSSOVER & 2ND CH', icon: Speaker },
+            { id: 'crossover', label: 'ACTIVE XOVER', icon: Speaker },
             { id: 'dynamics', label: 'DYNAMICS & SENDS', icon: Radio },
+            { id: 'fxrack', label: 'FX RACK (4)', icon: Sparkles },
+            { id: 'matrix', label: 'MATRIX MIX N×M', icon: GitBranch },
           ].map((mod) => {
             const Icon = mod.icon;
             const active = consoleModule === mod.id;
@@ -389,7 +430,7 @@ export const LiveSoundConsole: React.FC = () => {
                 key={mod.id}
                 type="button"
                 onClick={() => setConsoleModule(mod.id as typeof consoleModule)}
-                className={`px-2.5 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1.5 whitespace-nowrap transition-all ${
+                className={`px-2 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
                   active ? 'console-module-tab-active' : 'console-module-tab'
                 }`}
               >
@@ -400,11 +441,29 @@ export const LiveSoundConsole: React.FC = () => {
           })}
         </div>
 
-        {/* Dynamic Channel Bank Pages (6 Strips / Page — Unlimited Channels) */}
+        {/* Dynamic Channel Bank Pages (6/8/12/16/ALL Strips / Page — Unlimited Channels) */}
         <div className="flex items-center gap-1 flex-wrap">
+          <select
+            aria-label="Channel Bank Size"
+            value={String(bankSize)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              setBankSize(raw === 'all' ? 'all' : (Number(raw) as 6 | 8 | 12 | 16));
+              setBankPageIdx(0);
+            }}
+            className="console-btn-surface rounded px-1.5 py-1 text-[10px] font-mono text-amber-300 focus:outline-none"
+            title="Strips visible per bank page"
+          >
+            <option value="6">6/Bank</option>
+            <option value="8">8/Bank</option>
+            <option value="12">12/Bank</option>
+            <option value="16">16/Bank</option>
+            <option value="all">ALL IN</option>
+          </select>
+
           {Array.from({ length: totalPages }).map((_, pIdx) => {
-            const startNum = pIdx * 6 + 1;
-            const endNum = Math.min(channels.length, (pIdx + 1) * 6);
+            const startNum = pIdx * effectiveBankSize + 1;
+            const endNum = Math.min(dcaFilteredChannels.length, (pIdx + 1) * effectiveBankSize);
             const active = bankFilter === 'all' && safePageIdx === pIdx;
             return (
               <button
@@ -440,15 +499,17 @@ export const LiveSoundConsole: React.FC = () => {
               {tab.label}
             </button>
           ))}
-          <button
-            type="button"
-            onClick={() => setAddInputOpen((v) => !v)}
-            className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400/50 text-[10px] font-mono text-emerald-200 flex items-center gap-1 whitespace-nowrap"
-            title="Add new separate input channel"
-          >
-            <Plus className="w-3 h-3" />
-            <span>ADD IN</span>
-          </button>
+          {!isVolunteer && (
+            <button
+              type="button"
+              onClick={() => setAddInputOpen((v) => !v)}
+              className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400/50 text-[10px] font-mono text-emerald-200 flex items-center gap-1 whitespace-nowrap"
+              title="Add new separate input channel"
+            >
+              <Plus className="w-3 h-3" />
+              <span>ADD IN</span>
+            </button>
+          )}
         </div>
 
         {/* Sends-On-Fader + DSP IQ Autopilot */}
@@ -1131,36 +1192,139 @@ export const LiveSoundConsole: React.FC = () => {
                     }
                   />
                 </div>
+
+                {/* Mute-Safe + DCA Group Assignment */}
+                <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-white/[0.06]">
+                  <ConsoleButton
+                    label={selectedChannel.muteSafe ? 'MUTE SAFE' : 'SAFE OFF'}
+                    size="xs"
+                    color="emerald"
+                    active={Boolean(selectedChannel.muteSafe)}
+                    manualOnlyReason={volunteerLockReason}
+                    onClick={() =>
+                      handleManualCheck(
+                        updateChannel(selectedChannel.id, { muteSafe: !selectedChannel.muteSafe })
+                      )
+                    }
+                  />
+                  <div className="flex items-center gap-0.5">
+                    <span className="text-[9px] font-mono text-slate-400 mr-1">DCA:</span>
+                    {([null, 'A', 'B', 'C', 'D'] as (DcaGroupId | null)[]).map((gid) => (
+                      <button
+                        key={gid ?? 'none'}
+                        type="button"
+                        disabled={isVolunteer}
+                        onClick={() =>
+                          handleManualCheck(updateChannel(selectedChannel.id, { dcaGroup: gid }))
+                        }
+                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono border disabled:opacity-40 ${
+                          selectedChannel.dcaGroup === gid
+                            ? 'console-accent-solid border-transparent'
+                            : 'console-btn-surface text-slate-300'
+                        }`}
+                      >
+                        {gid ?? '—'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
 
-          {/* CENTER BAY: 6-Strip Expandable Motorized Fader Bank */}
-          <div className="xl:col-span-5 2xl:col-span-6 console-chassis rounded-lg border p-2.5 flex flex-col justify-between min-h-0 overflow-hidden">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-white/[0.07] shrink-0">
-              <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
-                Fader Bank ({bankFilter === 'all' ? `CH ${safePageIdx * 6 + 1}–${Math.min(channels.length, (safePageIdx + 1) * 6)}` : bankFilter.toUpperCase()}) · {channels.length} IN
-              </span>
-              <div className="flex items-center gap-2">
+          {/* CENTER BAY: Flexible Expandable Motorized Fader Bank + DCA Spill Bar + Parameter Automation Lanes */}
+          <div className="xl:col-span-5 2xl:col-span-6 console-chassis rounded-lg border p-2.5 flex flex-col justify-between gap-1.5 min-h-0 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-1.5 pb-1.5 border-b border-white/[0.07] shrink-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                  Bank ({activeDcaSpill ? `DCA ${activeDcaSpill} SPILL` : bankFilter === 'all' ? `CH ${safePageIdx * effectiveBankSize + 1}–${Math.min(dcaFilteredChannels.length, (safePageIdx + 1) * effectiveBankSize)}` : bankFilter.toUpperCase()}) · {visibleChannels.length}/{channels.length} IN
+                </span>
+                {activeDcaSpill && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveDcaSpill(null)}
+                    className="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-400/60 text-[9px] font-mono text-amber-200 font-bold whitespace-nowrap"
+                  >
+                    EXIT SPILL
+                  </button>
+                )}
+                {isVolunteer && (
+                  <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-400/40 text-[9px] font-mono text-amber-200 flex items-center gap-1 whitespace-nowrap">
+                    <Lock className="w-2.5 h-2.5" />
+                    VOLUNTEER
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1 flex-wrap">
+                {/* PFL / AFL / SIP Solo Mode Selector */}
+                <div className="flex items-center console-well rounded p-0.5 gap-0.5">
+                  {(['pfl', 'afl', 'sip'] as SoloMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setSoloMode(mode)}
+                      title={
+                        mode === 'pfl'
+                          ? 'Pre-Fader Listen (Cue Bus)'
+                          : mode === 'afl'
+                            ? 'After-Fader Listen (Cue Bus)'
+                            : 'Solo-In-Place (Mutes non-soloed channels)'
+                      }
+                      className={`px-1.5 py-0.5 rounded-[2px] text-[8.5px] font-mono uppercase transition-colors ${
+                        soloMode === mode
+                          ? 'bg-sky-500 text-slate-950 font-bold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                  {anyChannelSolo && (
+                    <button
+                      type="button"
+                      onClick={clearAllSolos}
+                      className="px-1.5 py-0.5 rounded-[2px] text-[8.5px] font-mono bg-rose-500/30 text-rose-200 font-bold"
+                    >
+                      CLR
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAutomationLanes((v) => !v)}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono border flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                    showAutomationLanes ? 'console-accent-active' : 'console-btn-surface text-slate-300'
+                  }`}
+                  title="Toggle parameter automation lanes beneath channel strips"
+                >
+                  <Activity className="w-2.5 h-2.5" />
+                  <span>AUTO LANES</span>
+                </button>
                 <button
                   type="button"
                   onClick={toggleAllExpanded}
-                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono border flex items-center gap-1 ${
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono border flex items-center gap-1 whitespace-nowrap shrink-0 ${
                     expandAllStrips ? 'console-accent-active' : 'console-btn-surface text-slate-300'
                   }`}
                   title="Toggle detailed fader view (Gain Reduction History + Peak Hold)"
                 >
                   {expandAllStrips ? <Minimize2 className="w-2.5 h-2.5" /> : <Maximize2 className="w-2.5 h-2.5" />}
-                  <span>{expandAllStrips ? 'COMPACT SLOTS' : 'EXPAND ALL'}</span>
+                  <span>{expandAllStrips ? 'COMPACT' : 'EXPAND'}</span>
                 </button>
-                <span className="text-[10px] font-mono text-slate-300">
-                  1ST: <strong className="text-amber-300">CH {selectedChannel.number}</strong> · 2ND:{' '}
-                  <strong className="text-sky-300">CH {partnerChannel.number}</strong>
-                </span>
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-2">
+            <div
+              className={
+                visibleChannels.length > 8
+                  ? 'flex-1 min-h-0 flex items-stretch gap-1.5 overflow-x-auto pb-1 pt-0.5'
+                  : visibleChannels.length > 6
+                    ? 'flex-1 min-h-0 grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-1.5 pt-0.5'
+                    : 'flex-1 min-h-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-0.5'
+              }
+            >
               {visibleChannels.map((ch) => {
                 const m = meters[ch.id];
                 const isSelected = ch.id === selectedChannel.id;
@@ -1206,7 +1370,9 @@ export const LiveSoundConsole: React.FC = () => {
                   <div
                     key={ch.id}
                     onClick={() => setSelectedChannelId(ch.id)}
-                    className={`rounded-md p-1.5 flex flex-col items-center justify-between gap-1 border transition-all cursor-pointer min-w-0 ${
+                    className={`rounded-md p-1.5 flex flex-col items-center justify-between gap-1 border transition-all cursor-pointer ${
+                      visibleChannels.length > 8 ? 'min-w-[106px] shrink-0' : 'min-w-0'
+                    } ${
                       isSelected
                         ? 'console-selected-strip'
                         : isSecond
@@ -1378,7 +1544,7 @@ export const LiveSoundConsole: React.FC = () => {
                       <MotorizedFader
                         valueDb={faderVal}
                         onChange={handleFaderChange}
-                        height={isExpanded ? 116 : 158}
+                        height={showAutomationLanes ? (isExpanded ? 88 : 114) : isExpanded ? 116 : 158}
                         accentColor={sendMode === 'mix' ? 'amber' : 'cyan'}
                       />
                       <LedMeter
@@ -1386,15 +1552,86 @@ export const LiveSoundConsole: React.FC = () => {
                         peakHoldDbfs={peakHold}
                         gainReductionDb={m?.gainReductionDb ?? 0}
                         clipping={m?.clipping || peakHoldClipped}
-                        height={isExpanded ? 116 : 158}
+                        height={showAutomationLanes ? (isExpanded ? 88 : 114) : isExpanded ? 116 : 158}
                         width={8}
-                        segments={isExpanded ? 12 : 16}
+                        segments={showAutomationLanes ? (isExpanded ? 10 : 12) : isExpanded ? 12 : 16}
                       />
                     </div>
                   </div>
                 );
               })}
             </div>
+
+            {/* DCA Groups A / B / C / D Spill & Master Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 shrink-0">
+              {dcaGroups.map((dca) => {
+                const isSpilled = activeDcaSpill === dca.id;
+                const assignedCount = channels.filter((c) => c.dcaGroup === dca.id).length;
+                return (
+                  <div
+                    key={dca.id}
+                    className={`console-well rounded px-2 py-1 border flex flex-col gap-1 ${
+                      isSpilled ? 'border-amber-400/80 bg-amber-500/10' : 'border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1 text-[9px] font-mono">
+                      <span className="font-bold text-amber-300 truncate">
+                        DCA {dca.id} · {dca.label} ({assignedCount})
+                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setActiveDcaSpill(isSpilled ? null : dca.id)}
+                          className={`px-1 py-0.5 rounded text-[8px] font-bold border ${
+                            isSpilled
+                              ? 'bg-amber-400 text-slate-950 border-amber-300'
+                              : 'console-btn-surface text-sky-300'
+                          }`}
+                          title={`Spill DCA ${dca.id} channels onto fader bank`}
+                        >
+                          SPILL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateDcaGroup(dca.id, { mute: !dca.mute })}
+                          className={`px-1 py-0.5 rounded text-[8px] font-bold border ${
+                            dca.mute
+                              ? 'bg-rose-500 text-white border-rose-400'
+                              : 'console-btn-surface text-slate-300'
+                          }`}
+                        >
+                          {dca.mute ? 'M' : 'ON'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="range"
+                        aria-label={`DCA ${dca.id} Fader`}
+                        min={-60}
+                        max={10}
+                        step={0.5}
+                        value={dca.faderDb}
+                        onChange={(e) =>
+                          updateDcaGroup(dca.id, { faderDb: Number.parseFloat(e.target.value) })
+                        }
+                        className="w-full accent-amber-400 h-1 cursor-pointer"
+                      />
+                      <span className="text-[8.5px] font-mono tabular-nums text-slate-200 w-9 text-right shrink-0">
+                        {dca.faderDb <= -59 ? '-∞' : `${dca.faderDb > 0 ? '+' : ''}${dca.faderDb.toFixed(1)}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {showAutomationLanes && (
+              <ChannelAutomationLanes
+                visibleChannels={visibleChannels}
+                onCollapse={() => setShowAutomationLanes(false)}
+              />
+            )}
           </div>
 
           {/* RIGHT BAY: Active Crossover Summary + Dual Master VU + Master L/R & Sub/Stream */}
@@ -1731,7 +1968,7 @@ export const LiveSoundConsole: React.FC = () => {
                   return (
                     <g key={hz}>
                       <line x1={x} y1={0} x2={x} y2={190} stroke="rgba(148,163,184,0.12)" />
-                      <text x={x + 3} y={182} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">
+                      <text x={x + 3} y={182} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono">
                         {hz >= 1000 ? `${hz / 1000}k` : hz}
                       </text>
                     </g>
@@ -1748,7 +1985,7 @@ export const LiveSoundConsole: React.FC = () => {
                         y2={y}
                         stroke={db === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(148,163,184,0.12)'}
                       />
-                      <text x={5} y={y - 3} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono">
+                      <text x={5} y={y - 3} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono">
                         {db}dB
                       </text>
                     </g>
@@ -2000,6 +2237,302 @@ export const LiveSoundConsole: React.FC = () => {
                       updateChannelSend(ch.id, 'livestream', { levelDb: v, enabled: v > -55 })
                     }
                   />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MODULE 5: 4-SLOT HARDWARE DSP FX RACK (HALL, PLATE, BPM TAP DELAY, CHORUS) */}
+      {consoleModule === 'fxrack' && (
+        <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 overflow-hidden">
+          {fxRack.map((slot) => {
+            const fm = meters[slot.id];
+            return (
+              <div
+                key={slot.id}
+                className="console-chassis rounded-lg border p-3 flex flex-col justify-between gap-2 min-h-0 overflow-hidden"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2 shrink-0">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-mono text-amber-300 uppercase">
+                      FX SLOT {slot.slotNumber}
+                    </div>
+                    <div className="text-sm font-semibold text-slate-100 truncate">{slot.name}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <ConsoleButton
+                      label={slot.bypass ? 'BYPASSED' : slot.enabled ? 'ACTIVE' : 'OFF'}
+                      size="xs"
+                      color={slot.bypass ? 'crimson' : slot.enabled ? 'emerald' : 'amber'}
+                      active={slot.enabled && !slot.bypass}
+                      manualOnlyReason={volunteerLockReason}
+                      onClick={() => updateFxSlot(slot.id, { bypass: !slot.bypass, enabled: true })}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 console-well rounded p-2 shrink-0">
+                  <div className="flex-1 space-y-1">
+                    <label className="block text-[9px] font-mono text-slate-400">INPUT FEED BUS</label>
+                    <select
+                      disabled={isVolunteer}
+                      value={slot.inputBusId}
+                      onChange={(e) => updateFxSlot(slot.id, { inputBusId: e.target.value })}
+                      className="w-full console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200 disabled:opacity-50"
+                    >
+                      {buses.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.shortName} · {b.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <LedMeter peakDbfs={fm?.peakDbfs ?? -80} height={46} width={8} segments={8} label="RTN" />
+                </div>
+
+                <div className="console-panel rounded p-2.5 grid grid-cols-2 gap-3 items-center flex-1">
+                  <RotaryKnob
+                    label="RETURN"
+                    value={slot.returnGainDb}
+                    min={-60}
+                    max={10}
+                    step={0.5}
+                    unit="dB"
+                    size={42}
+                    accentColor="emerald"
+                    manualOnlyReason={volunteerLockReason}
+                    onChange={(v) => updateFxSlot(slot.id, { returnGainDb: v })}
+                  />
+
+                  {(slot.type === 'hall-reverb' || slot.type === 'plate-reverb') && (
+                    <>
+                      <RotaryKnob
+                        label="DECAY"
+                        value={slot.decaySec}
+                        min={0.4}
+                        max={6.5}
+                        step={0.1}
+                        unit="s"
+                        size={42}
+                        accentColor="amber"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { decaySec: v })}
+                      />
+                      <RotaryKnob
+                        label="PRE-DLY"
+                        value={slot.preDelayMs}
+                        min={0}
+                        max={120}
+                        step={2}
+                        unit="ms"
+                        size={42}
+                        accentColor="cyan"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { preDelayMs: v })}
+                      />
+                      <RotaryKnob
+                        label="DAMPING"
+                        value={slot.dampingHz}
+                        min={1500}
+                        max={14000}
+                        step={250}
+                        size={42}
+                        accentColor="cyan"
+                        manualOnlyReason={volunteerLockReason}
+                        formatValue={(v) => `${(v / 1000).toFixed(1)}k`}
+                        onChange={(v) => updateFxSlot(slot.id, { dampingHz: v })}
+                      />
+                    </>
+                  )}
+
+                  {slot.type === 'tap-delay' && (
+                    <>
+                      <RotaryKnob
+                        label="BPM"
+                        value={slot.bpm}
+                        min={50}
+                        max={180}
+                        step={1}
+                        size={42}
+                        accentColor="amber"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => {
+                          const quarterMs = 60000 / v;
+                          const mult =
+                            slot.subdivision === '1/8' ? 0.5 : slot.subdivision === 'dotted-1/8' ? 0.75 : 1;
+                          updateFxSlot(slot.id, { bpm: v, delayTimeMs: Math.round(quarterMs * mult) });
+                        }}
+                      />
+                      <RotaryKnob
+                        label="FEEDBACK"
+                        value={slot.feedbackPct}
+                        min={0}
+                        max={80}
+                        step={2}
+                        unit="%"
+                        size={42}
+                        accentColor="rose"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { feedbackPct: v })}
+                      />
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[9px] font-mono text-slate-400 text-center">SUBDIV</span>
+                        <div className="grid grid-cols-3 gap-0.5">
+                          {(['1/4', '1/8', 'dotted-1/8'] as const).map((sub) => (
+                            <button
+                              key={sub}
+                              type="button"
+                              disabled={isVolunteer}
+                              onClick={() => {
+                                const quarterMs = 60000 / slot.bpm;
+                                const mult = sub === '1/8' ? 0.5 : sub === 'dotted-1/8' ? 0.75 : 1;
+                                updateFxSlot(slot.id, {
+                                  subdivision: sub,
+                                  delayTimeMs: Math.round(quarterMs * mult),
+                                });
+                              }}
+                              className={`py-1 rounded text-[8.5px] font-mono border disabled:opacity-40 ${
+                                slot.subdivision === sub
+                                  ? 'console-accent-solid border-transparent'
+                                  : 'console-btn-surface text-slate-300'
+                              }`}
+                            >
+                              {sub === 'dotted-1/8' ? 'D1/8' : sub}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {slot.type === 'vocal-chorus' && (
+                    <>
+                      <RotaryKnob
+                        label="RATE"
+                        value={slot.chorusRateHz}
+                        min={0.1}
+                        max={4.0}
+                        step={0.1}
+                        unit="Hz"
+                        size={42}
+                        accentColor="cyan"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { chorusRateHz: v })}
+                      />
+                      <RotaryKnob
+                        label="DEPTH"
+                        value={slot.chorusDepthPct}
+                        min={5}
+                        max={100}
+                        step={5}
+                        unit="%"
+                        size={42}
+                        accentColor="amber"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { chorusDepthPct: v })}
+                      />
+                      <RotaryKnob
+                        label="BASE DLY"
+                        value={slot.delayTimeMs}
+                        min={6}
+                        max={40}
+                        step={1}
+                        unit="ms"
+                        size={42}
+                        accentColor="cyan"
+                        manualOnlyReason={volunteerLockReason}
+                        onChange={(v) => updateFxSlot(slot.id, { delayTimeMs: v })}
+                      />
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MODULE 6: N×M ARCHITECTURAL ZONE MATRIX MIXER */}
+      {consoleModule === 'matrix' && (
+        <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5 overflow-hidden">
+          {matrixZones.map((zone) => {
+            const zm = meters[zone.id];
+            return (
+              <div
+                key={zone.id}
+                className="console-chassis rounded-lg border p-3 flex flex-col justify-between gap-2 min-h-0 overflow-hidden"
+              >
+                <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2 shrink-0">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-mono text-sky-300 uppercase">{zone.shortName} · {zone.physicalOut}</div>
+                    <div className="text-sm font-semibold text-slate-100 truncate">{zone.name}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <LedMeter peakDbfs={zm?.peakDbfs ?? -80} height={32} width={7} segments={6} />
+                    <ConsoleButton
+                      label={zone.mute ? 'MUTED' : 'LIVE'}
+                      size="xs"
+                      color={zone.mute ? 'crimson' : 'emerald'}
+                      active={!zone.mute}
+                      manualOnlyReason={volunteerLockReason}
+                      onClick={() => updateMatrixZone(zone.id, { mute: !zone.mute })}
+                    />
+                  </div>
+                </div>
+
+                <div className="console-panel rounded p-2 space-y-1.5 shrink-0">
+                  <HorizontalSlider
+                    label="ZONE MASTER"
+                    value={zone.masterGainDb}
+                    min={-75}
+                    max={10}
+                    step={0.5}
+                    unit="dB"
+                    accentColor="emerald"
+                    onChange={(v) => !isVolunteer && updateMatrixZone(zone.id, { masterGainDb: v })}
+                  />
+                  <HorizontalSlider
+                    label={`ALIGN DELAY (${(zone.delayMs * 0.343).toFixed(1)} m)`}
+                    value={zone.delayMs}
+                    min={0}
+                    max={120}
+                    step={0.5}
+                    unit="ms"
+                    accentColor="cyan"
+                    onChange={(v) => !isVolunteer && updateMatrixZone(zone.id, { delayMs: v })}
+                  />
+                </div>
+
+                <div className="flex-1 min-h-0 console-well rounded p-2 overflow-y-auto space-y-1.5">
+                  <div className="text-[9px] font-mono text-slate-400 uppercase">BUS → ZONE SEND MATRIX</div>
+                  {buses.map((b) => {
+                    const sendDb = zone.sourceGains[b.id] ?? -75;
+                    return (
+                      <div key={b.id} className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[9.5px] font-mono">
+                          <span className="text-slate-200 truncate">{b.shortName}</span>
+                          <span className="tabular-nums text-amber-300">
+                            {sendDb <= -70 ? '-∞ dB' : `${sendDb > 0 ? '+' : ''}${sendDb.toFixed(1)} dB`}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          aria-label={`${zone.name} send from ${b.shortName}`}
+                          disabled={isVolunteer}
+                          min={-75}
+                          max={10}
+                          step={0.5}
+                          value={sendDb}
+                          onChange={(e) =>
+                            updateMatrixZoneSource(zone.id, b.id, Number.parseFloat(e.target.value))
+                          }
+                          className="w-full accent-sky-400 h-1.5 cursor-pointer disabled:opacity-45"
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );

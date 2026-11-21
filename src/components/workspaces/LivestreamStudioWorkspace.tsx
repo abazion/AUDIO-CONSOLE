@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Radio, Disc, Video, Sliders, Gauge, Download } from 'lucide-react';
+import { Radio, Disc, Video, Sliders, Gauge, Download, Waves } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
 import { MotorizedFader } from '../hardware/MotorizedFader';
 import { AnalogVuMeter, LedMeter } from '../hardware/LedMeter';
 import { ConsoleButton } from '../hardware/ConsoleButton';
 import { RotaryKnob } from '../hardware/RotaryKnob';
+import { MultitrackRecorderPanel } from './MultitrackRecorderPanel';
 
 export const LivestreamStudioWorkspace: React.FC = () => {
   const {
@@ -18,9 +19,16 @@ export const LivestreamStudioWorkspace: React.FC = () => {
     updateVirtualCable,
     recordingActive,
     recordingDurationSec,
+    recordingTargetId,
+    setRecordingTargetId,
+    recordedTakes,
     lastRecordingUrl,
     lastRecordingFilename,
     toggleStreamRecording,
+    multitrackRecording,
+    multitrackArmedIds,
+    broadcastLoudness,
+    matrixZones,
   } = useAudioConsole();
 
   const streamBus = buses.find((b) => b.id === 'bus-stream') ?? buses[0];
@@ -28,8 +36,9 @@ export const LivestreamStudioWorkspace: React.FC = () => {
   const streamVac = virtualCables.find(
     (vc) => vc.sourceKind === 'bus' && vc.sourceId === streamBus.id
   );
+  const broadcastZone = matrixZones.find((z) => z.id === 'mtx-broadcast');
 
-  const [streamTab, setStreamTab] = useState<'sends' | 'loudness'>('sends');
+  const [streamTab, setStreamTab] = useState<'sends' | 'loudness' | 'multitrack'>('multitrack');
   const [pageIdx, setPageIdx] = useState<number>(0);
   const [targetLufs, setTargetLufs] = useState<number>(-14);
   const [recError, setRecError] = useState<string | null>(null);
@@ -39,9 +48,12 @@ export const LivestreamStudioWorkspace: React.FC = () => {
   const visibleChannels = channels.slice(safePageIdx * 6, safePageIdx * 6 + 6);
 
   const hasSignal = Boolean(streamMeter?.signalPresent);
-  const shortTermLufs = hasSignal ? Math.max(-65, streamMeter.rmsDbfs + 2.5) : -80;
-  const integratedLufs = hasSignal ? Math.max(-65, shortTermLufs - 0.8) : -80;
-  const truePeakDb = hasSignal ? Math.min(0, streamMeter.peakDbfs) : -80;
+  const momentaryLufs = broadcastLoudness.momentaryLufs;
+  const shortTermLufs = broadcastLoudness.shortTermLufs;
+  const integratedLufs = broadcastLoudness.integratedLufs;
+  const truePeakDb = broadcastLoudness.truePeakDbtp;
+  const loudnessRangeLu = broadcastLoudness.loudnessRangeLu;
+  const complianceDelta = integratedLufs > -75 ? integratedLufs - targetLufs : null;
 
   const formatDuration = (sec: number) => {
     const mm = String(Math.floor(sec / 60)).padStart(2, '0');
@@ -49,11 +61,17 @@ export const LivestreamStudioWorkspace: React.FC = () => {
     return `${mm}:${ss}`;
   };
 
+  const [recSourceMode, setRecSourceMode] = useState<'bus-stream' | 'system-master'>(
+    recordingTargetId === 'system-master' ? 'system-master' : 'bus-stream'
+  );
+
   const handleToggleRec = async () => {
     setRecError(null);
-    const res = await toggleStreamRecording(streamBus.id);
+    const target = recordingActive ? recordingTargetId : recSourceMode;
+    setRecordingTargetId(target);
+    const res = await toggleStreamRecording(target);
     if (!res.ok) {
-      setRecError(res.error ?? 'Unable to start broadcast recorder.');
+      setRecError(res.error ?? 'Unable to start recorder.');
     }
   };
 
@@ -77,6 +95,13 @@ export const LivestreamStudioWorkspace: React.FC = () => {
           {[
             { id: 'sends', label: 'BROADCAST SENDS (6-UP)', icon: Sliders },
             { id: 'loudness', label: 'LOUDNESS LUFS & MATRIX', icon: Gauge },
+            {
+              id: 'multitrack',
+              label: multitrackRecording
+                ? `MULTITRACK WAV (${multitrackArmedIds.length} REC)`
+                : 'MULTITRACK WAV',
+              icon: Waves,
+            },
           ].map((t) => {
             const Icon = t.icon;
             return (
@@ -84,8 +109,12 @@ export const LivestreamStudioWorkspace: React.FC = () => {
                 key={t.id}
                 type="button"
                 onClick={() => setStreamTab(t.id as typeof streamTab)}
-                className={`px-2.5 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1 whitespace-nowrap transition-all ${
-                  streamTab === t.id ? 'console-module-tab-active' : 'console-module-tab'
+                className={`px-2.5 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1 whitespace-nowrap shrink-0 transition-all ${
+                  streamTab === t.id
+                    ? 'console-module-tab-active'
+                    : t.id === 'multitrack' && multitrackRecording
+                      ? 'bg-rose-500/20 text-rose-200'
+                      : 'console-module-tab'
                 }`}
               >
                 <Icon className="w-3 h-3" />
@@ -96,8 +125,24 @@ export const LivestreamStudioWorkspace: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-1.5">
+          <select
+            aria-label="Broadcast or System recording target"
+            disabled={recordingActive}
+            value={recSourceMode}
+            onChange={(e) => setRecSourceMode(e.target.value as 'bus-stream' | 'system-master')}
+            className="console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200 disabled:opacity-50"
+          >
+            <option value="bus-stream">Stream Bus</option>
+            <option value="system-master">Whole System Out</option>
+          </select>
           <ConsoleButton
-            label={recordingActive ? `STOP REC (${formatDuration(recordingDurationSec)})` : 'REC STREAM'}
+            label={
+              recordingActive
+                ? `STOP REC (${formatDuration(recordingDurationSec)})`
+                : recSourceMode === 'system-master'
+                  ? 'REC SYSTEM'
+                  : 'REC STREAM'
+            }
             size="xs"
             color="crimson"
             active={recordingActive}
@@ -110,7 +155,7 @@ export const LivestreamStudioWorkspace: React.FC = () => {
               className="px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/15 text-[10px] font-mono text-emerald-300 flex items-center gap-1 hover:bg-emerald-500/25"
             >
               <Download className="w-3 h-3" />
-              <span>Save Take</span>
+              <span>Save Take ({recordedTakes.length})</span>
             </a>
           )}
           {streamVac && (
@@ -132,7 +177,9 @@ export const LivestreamStudioWorkspace: React.FC = () => {
       )}
 
       {/* Main Single-Viewport Workspace */}
-      {streamTab === 'sends' ? (
+      {streamTab === 'multitrack' ? (
+        <MultitrackRecorderPanel />
+      ) : streamTab === 'sends' ? (
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
           {/* Left 8 Cols: Dynamic 6-Up Broadcast Fader Bank */}
           <div className="lg:col-span-8 console-chassis rounded-lg border border-white/10 p-3 flex flex-col gap-2 min-h-0 overflow-hidden">
@@ -224,20 +271,20 @@ export const LivestreamStudioWorkspace: React.FC = () => {
               />
             </div>
 
-            <div className="oled-display rounded p-2.5 grid grid-cols-3 gap-1.5 text-center font-mono shrink-0">
+            <div className="oled-display rounded p-2.5 grid grid-cols-4 gap-1.5 text-center font-mono shrink-0">
               <div>
                 <div className="text-[8px] text-slate-400">INTEGRATED</div>
                 <div className="text-sm font-bold text-emerald-300 tabular-nums">
-                  {hasSignal ? integratedLufs.toFixed(1) : 'IDLE'}
+                  {integratedLufs > -75 ? integratedLufs.toFixed(1) : 'IDLE'}
                 </div>
-                <div className="text-[8px] text-slate-500">LUFS</div>
+                <div className="text-[8px] text-slate-400">LUFS</div>
               </div>
               <div>
                 <div className="text-[8px] text-slate-400">SHORT-TERM</div>
                 <div className="text-sm font-bold text-sky-300 tabular-nums">
-                  {hasSignal ? shortTermLufs.toFixed(1) : 'IDLE'}
+                  {shortTermLufs > -75 ? shortTermLufs.toFixed(1) : 'IDLE'}
                 </div>
-                <div className="text-[8px] text-slate-500">LUFS</div>
+                <div className="text-[8px] text-slate-400">LUFS</div>
               </div>
               <div>
                 <div className="text-[8px] text-slate-400">TRUE PEAK</div>
@@ -246,9 +293,28 @@ export const LivestreamStudioWorkspace: React.FC = () => {
                     truePeakDb > -1.0 ? 'text-rose-400' : 'text-amber-300'
                   }`}
                 >
-                  {hasSignal ? truePeakDb.toFixed(1) : '-80.0'}
+                  {truePeakDb > -79 ? truePeakDb.toFixed(1) : '-80.0'}
                 </div>
-                <div className="text-[8px] text-slate-500">dBTP</div>
+                <div className="text-[8px] text-slate-400">dBTP</div>
+              </div>
+              <div>
+                <div className="text-[8px] text-slate-400">LRA / DELTA</div>
+                <div
+                  className={`text-sm font-bold tabular-nums ${
+                    complianceDelta === null
+                      ? 'text-slate-400'
+                      : Math.abs(complianceDelta) <= 1.5
+                        ? 'text-emerald-300'
+                        : 'text-amber-300'
+                  }`}
+                >
+                  {complianceDelta === null
+                    ? `${loudnessRangeLu.toFixed(1)} LU`
+                    : `${complianceDelta >= 0 ? '+' : ''}${complianceDelta.toFixed(1)}`}
+                </div>
+                <div className="text-[8px] text-slate-400">
+                  {complianceDelta === null ? 'RANGE' : 'vs TGT'}
+                </div>
               </div>
             </div>
 
@@ -300,9 +366,31 @@ export const LivestreamStudioWorkspace: React.FC = () => {
       ) : (
         /* Tab 2: Dedicated Broadcast Loudness & Dynamic Channel Send Matrix */
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
-          <div className="lg:col-span-6 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2.5 min-h-0 overflow-hidden">
-            <div className="text-xs font-mono font-semibold text-sky-300 uppercase border-b border-white/10 pb-1.5">
-              ITU-R BS.1770 Loudness Bridge &amp; Master Limiter
+          <div className="lg:col-span-6 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2 min-h-0 overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-1.5">
+              <span className="text-xs font-mono font-semibold text-sky-300 uppercase">
+                ITU-R BS.1770-4 K-Weighted Loudness Bridge
+              </span>
+              <div className="flex items-center gap-1">
+                {[
+                  { label: 'YT -14', val: -14 },
+                  { label: 'FB -16', val: -16 },
+                  { label: 'EBU -23', val: -23 },
+                ].map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => setTargetLufs(preset.val)}
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
+                      targetLufs === preset.val
+                        ? 'console-accent-solid border-transparent'
+                        : 'console-btn-surface text-slate-300'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <AnalogVuMeter
@@ -316,29 +404,57 @@ export const LivestreamStudioWorkspace: React.FC = () => {
                 peakLed={streamMeter?.clipping}
               />
             </div>
-            <div className="oled-display rounded p-3 grid grid-cols-3 gap-2 text-center font-mono">
+            <div className="oled-display rounded p-2.5 grid grid-cols-5 gap-1.5 text-center font-mono">
               <div>
-                <div className="text-[9px] text-slate-400">INTEGRATED</div>
-                <div className="text-lg font-bold text-emerald-300 tabular-nums">
-                  {hasSignal ? integratedLufs.toFixed(1) : 'IDLE'}
+                <div className="text-[8.5px] text-slate-400">MOMENTARY</div>
+                <div className="text-base font-bold text-slate-100 tabular-nums">
+                  {momentaryLufs > -75 ? momentaryLufs.toFixed(1) : 'IDLE'}
                 </div>
-                <div className="text-[9px] text-slate-500">LUFS</div>
+                <div className="text-[8.5px] text-slate-400">LUFS</div>
               </div>
               <div>
-                <div className="text-[9px] text-slate-400">SHORT-TERM</div>
-                <div className="text-lg font-bold text-sky-300 tabular-nums">
-                  {hasSignal ? shortTermLufs.toFixed(1) : 'IDLE'}
+                <div className="text-[8.5px] text-slate-400">SHORT-TERM</div>
+                <div className="text-base font-bold text-sky-300 tabular-nums">
+                  {shortTermLufs > -75 ? shortTermLufs.toFixed(1) : 'IDLE'}
                 </div>
-                <div className="text-[9px] text-slate-500">LUFS</div>
+                <div className="text-[8.5px] text-slate-400">LUFS</div>
               </div>
               <div>
-                <div className="text-[9px] text-slate-400">TRUE PEAK</div>
-                <div className={`text-lg font-bold tabular-nums ${truePeakDb > -1.0 ? 'text-rose-400' : 'text-amber-300'}`}>
-                  {hasSignal ? truePeakDb.toFixed(1) : '-80.0'}
+                <div className="text-[8.5px] text-slate-400">INTEGRATED</div>
+                <div className="text-base font-bold text-emerald-300 tabular-nums">
+                  {integratedLufs > -75 ? integratedLufs.toFixed(1) : 'IDLE'}
                 </div>
-                <div className="text-[9px] text-slate-500">dBTP</div>
+                <div className="text-[8.5px] text-slate-400">LUFS</div>
+              </div>
+              <div>
+                <div className="text-[8.5px] text-slate-400">TRUE PEAK</div>
+                <div className={`text-base font-bold tabular-nums ${truePeakDb > -1.0 ? 'text-rose-400' : 'text-amber-300'}`}>
+                  {truePeakDb > -79 ? truePeakDb.toFixed(1) : '-80.0'}
+                </div>
+                <div className="text-[8.5px] text-slate-400">dBTP</div>
+              </div>
+              <div>
+                <div className="text-[8.5px] text-slate-400">LRA / DELTA</div>
+                <div className="text-base font-bold text-amber-200 tabular-nums">
+                  {loudnessRangeLu.toFixed(1)} LU
+                </div>
+                <div className="text-[8.5px] text-slate-400">
+                  {complianceDelta === null
+                    ? `TGT ${targetLufs}`
+                    : `${complianceDelta >= 0 ? '+' : ''}${complianceDelta.toFixed(1)} dB`}
+                </div>
               </div>
             </div>
+            {broadcastZone && (
+              <div className="console-well rounded px-2.5 py-1.5 flex items-center justify-between text-[10px] font-mono">
+                <span className="text-slate-300">
+                  Matrix Out: <strong className="text-sky-300">{broadcastZone.name}</strong> ({broadcastZone.physicalOut})
+                </span>
+                <span className={broadcastZone.mute ? 'text-rose-300' : 'text-emerald-300'}>
+                  {broadcastZone.mute ? 'MUTED' : `${broadcastZone.masterGainDb.toFixed(1)} dB · ${broadcastZone.delayMs.toFixed(1)} ms`}
+                </span>
+              </div>
+            )}
             <div className="flex-1 min-h-0 console-well rounded p-3 flex items-center justify-around">
               <RotaryKnob
                 label="TARGET LUFS"

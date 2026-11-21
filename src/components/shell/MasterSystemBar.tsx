@@ -14,9 +14,12 @@ import {
   Gauge,
   Camera,
   ArrowLeftRight,
+  Shield,
+  Eye,
+  Usb,
 } from 'lucide-react';
 import { useAudioConsole, WORKSPACE_GROUPS } from '../../engine/store';
-import type { ConsoleThemeId, HardwareProfileId, OperatingMode } from '../../engine/types';
+import type { ConsoleThemeId, HardwareProfileId, OperatingMode, OperatorRole } from '../../engine/types';
 
 const WORKSPACE_THEMES: { id: ConsoleThemeId; label: string; swatch: string }[] = [
   { id: 'obsidian-brass', label: 'Obsidian Brass', swatch: '#f59e0b' },
@@ -60,6 +63,14 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
     openSnapshotManager,
     detectedHardware,
     channels,
+    connectedSeats,
+    wsConnected,
+    operatorRole,
+    setOperatorRole,
+    highVisibilityMode,
+    setHighVisibilityMode,
+    midiConnectedDevices,
+    midiLastMessage,
   } = useAudioConsole();
 
   const currentGroup = WORKSPACE_GROUPS.find((g) => g.id === activeDestination) ?? WORKSPACE_GROUPS[0];
@@ -274,6 +285,82 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
           <span className="text-[11px] text-slate-400 whitespace-nowrap truncate max-w-[140px]">
             Scene: <strong className="text-slate-200 font-medium">{activeScene?.name}</strong>
           </span>
+
+          {/* Multi-Seat WS Sync Readout (Static Indicator Dot) */}
+          <div
+            className="flex items-center gap-1.5 console-btn-surface rounded px-2 py-0.5 font-mono tabular-nums text-[10px] text-slate-200 whitespace-nowrap shrink-0"
+            title={wsConnected ? 'Real-time WebSocket multi-seat console sync active' : 'WebSocket reconnecting'}
+          >
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                wsConnected ? 'bg-emerald-400' : 'bg-amber-400'
+              }`}
+            />
+            <span>
+              {connectedSeats} Seat{connectedSeats !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          {/* Web MIDI Hardware Surface Indicator */}
+          {midiConnectedDevices.length > 0 && (
+            <div
+              className="flex items-center gap-1 console-btn-surface border-sky-500/40 rounded px-2 py-0.5 font-mono tabular-nums text-[10px] text-sky-300 whitespace-nowrap shrink-0"
+              title={
+                midiLastMessage
+                  ? `Connected: ${midiConnectedDevices.join(', ')} · Last: ${midiLastMessage}`
+                  : `Connected MIDI Surfaces: ${midiConnectedDevices.join(', ')}`
+              }
+            >
+              <Usb className="w-3 h-3 shrink-0" />
+              <span>MIDI ({midiConnectedDevices.length})</span>
+            </div>
+          )}
+
+          {/* Operator Role RBAC Selector */}
+          <div className="flex items-center gap-1 console-btn-surface rounded px-1.5 py-0.5 shrink-0">
+            <Shield
+              className={`w-3 h-3 shrink-0 ${
+                operatorRole === 'volunteer'
+                  ? 'text-amber-300'
+                  : operatorRole === 'system-tech'
+                    ? 'text-emerald-400'
+                    : 'text-sky-400'
+              }`}
+            />
+            <select
+              aria-label="Operator Access Role"
+              value={operatorRole}
+              onChange={(e) => setOperatorRole(e.target.value as OperatorRole)}
+              title="RBAC Role: Volunteer locks structural DSP/EQ/Routing; FOH & System Tech allow full engineering edits"
+              className="bg-transparent text-[10px] font-mono text-slate-200 focus:outline-none cursor-pointer"
+            >
+              <option value="volunteer" className="bg-[#0e1117] text-white">
+                Role: Volunteer
+              </option>
+              <option value="foh" className="bg-[#0e1117] text-white">
+                Role: FOH Mix
+              </option>
+              <option value="system-tech" className="bg-[#0e1117] text-white">
+                Role: Sys Tech
+              </option>
+            </select>
+          </div>
+
+          {/* High-Visibility Booth Toggle */}
+          <button
+            type="button"
+            aria-pressed={highVisibilityMode}
+            onClick={() => setHighVisibilityMode(!highVisibilityMode)}
+            title="Toggle High-Visibility Contrast for Bright Sanctuary Booths"
+            className={`px-2 py-0.5 rounded text-[10px] font-mono flex items-center gap-1 border transition-colors whitespace-nowrap shrink-0 ${
+              highVisibilityMode
+                ? 'console-accent-solid border-transparent'
+                : 'console-btn-surface text-slate-300'
+            }`}
+          >
+            <Eye className="w-3 h-3" />
+            <span>Hi-Vis</span>
+          </button>
 
           {/* Workspace Full-Surface Color Theme Selector + Quick Day/Night Switch */}
           <div className="flex items-center gap-1.5 console-panel rounded px-2 py-0.5 shrink-0">
