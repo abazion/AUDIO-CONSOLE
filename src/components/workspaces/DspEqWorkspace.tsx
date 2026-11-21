@@ -52,6 +52,8 @@ export const DspEqWorkspace: React.FC = () => {
     meters,
     spectrum,
     autoCalibrateChannel,
+    globalDspBypass,
+    toggleGlobalDspBypass,
   } = useAudioConsole();
 
   const chIdx = Math.max(0, channels.findIndex((c) => c.id === selectedChannelId));
@@ -223,11 +225,11 @@ export const DspEqWorkspace: React.FC = () => {
         { label: ch.sourceBinding?.active ? 'LIVE IN' : 'IN IDLE', on: Boolean(ch.sourceBinding?.active) },
         { label: `TRIM ${ch.softwareTrimDb >= 0 ? '+' : ''}${ch.softwareTrimDb.toFixed(1)}`, on: true },
         { label: ch.polarityInvert ? 'Ø INV' : 'Ø NORM', on: ch.polarityInvert },
-        { label: `${ch.delayMs.toFixed(1)}ms`, on: ch.delayMs > 0 },
-        { label: `HPF ${ch.hpfFreqHz}Hz`, on: ch.hpfEnabled },
-        { label: `PEQ (${ch.eqBands.length}B)`, on: ch.eqEnabled },
-        { label: '31B GEQ', on: ch.geqEnabled },
-        { label: 'DYNAMICS', on: ch.dynamics.compEnabled || ch.dynamics.gateEnabled },
+        { label: `${ch.delayMs.toFixed(1)}ms`, on: !globalDspBypass && ch.delayMs > 0 },
+        { label: `HPF ${ch.hpfFreqHz}Hz`, on: !globalDspBypass && ch.hpfEnabled },
+        { label: `PEQ (${ch.eqBands.length}B)`, on: !globalDspBypass && ch.eqEnabled },
+        { label: '31B GEQ', on: !globalDspBypass && ch.geqEnabled },
+        { label: 'DYNAMICS', on: !globalDspBypass && (ch.dynamics.compEnabled || ch.dynamics.gateEnabled) },
         { label: `FADER ${ch.faderDb.toFixed(1)}`, on: !ch.mute },
         { label: 'BUS → OUT', on: ch.assignMain || ch.assignSub || ch.assignBroadcast },
       ];
@@ -342,6 +344,15 @@ export const DspEqWorkspace: React.FC = () => {
               color="emerald"
               active={false}
               onClick={() => autoCalibrateChannel(ch.id)}
+            />
+          )}
+          {!isBusMode && globalDspBypass && (
+            <ConsoleButton
+              label="GLOBAL BYP"
+              size="xs"
+              color="amber"
+              active
+              onClick={toggleGlobalDspBypass}
             />
           )}
           <ConsoleButton

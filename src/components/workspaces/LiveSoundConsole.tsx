@@ -34,9 +34,14 @@ import type { ChannelStrip, CrossoverFamily, SourceCategory } from '../../engine
 
 const SPK_COLORS = ['#a78bfa', '#f59e0b', '#38bdf8', '#10b981', '#f43f5e'];
 
-const SelectedChannelEqCurve: React.FC<{ channel: ChannelStrip; compact?: boolean }> = ({
+const SelectedChannelEqCurve: React.FC<{
+  channel: ChannelStrip;
+  compact?: boolean;
+  bypassed?: boolean;
+}> = ({
   channel,
   compact = false,
+  bypassed = false,
 }) => {
   const path = useMemo(() => {
     const w = 320;
@@ -79,15 +84,19 @@ const SelectedChannelEqCurve: React.FC<{ channel: ChannelStrip; compact?: boolea
         <path
           d={path}
           fill="none"
-          stroke={channel.eqEnabled || channel.geqEnabled ? '#f59e0b' : '#64748b'}
+          stroke={!bypassed && (channel.eqEnabled || channel.geqEnabled) ? '#f59e0b' : '#64748b'}
+          strokeDasharray={bypassed ? '4 3' : undefined}
           strokeWidth="2.4"
         />
       </svg>
       <div className="flex items-center justify-between text-[8px] font-mono text-slate-400 mt-0.5">
         <span>20Hz</span>
         <span>100Hz</span>
-        <span>500Hz</span>
-        <span>1kHz</span>
+        {bypassed ? (
+          <span className="text-amber-300 font-semibold">GLOBAL A/B BYPASS</span>
+        ) : (
+          <span>500Hz · 1kHz</span>
+        )}
         <span>4kHz</span>
         <span>20kHz</span>
       </div>
@@ -118,6 +127,7 @@ export const LiveSoundConsole: React.FC = () => {
     setIntelligenceConfig,
     systemIntelligence,
     autoCalibrateChannel,
+    globalDspBypass,
   } = useAudioConsole();
 
   const [consoleModule, setConsoleModule] = useState<'desk' | 'eq31' | 'crossover' | 'dynamics'>('desk');
@@ -726,7 +736,7 @@ export const LiveSoundConsole: React.FC = () => {
                   </span>
                 </div>
 
-                <SelectedChannelEqCurve channel={selectedChannel} compact />
+                <SelectedChannelEqCurve channel={selectedChannel} compact bypassed={globalDspBypass} />
 
                 <div className="grid grid-cols-4 gap-1.5">
                   <RotaryKnob

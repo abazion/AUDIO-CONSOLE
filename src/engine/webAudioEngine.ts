@@ -438,7 +438,8 @@ class RealTimeConsoleAudioEngine {
     buses: BusNode[],
     speakers?: SpeakerBand[],
     virtualCables?: VirtualCableNode[],
-    virtualDi?: VirtualDiState
+    virtualDi?: VirtualDiState,
+    globalDspBypass = false
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     if (!this.ctx) {
@@ -463,7 +464,7 @@ class RealTimeConsoleAudioEngine {
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
-    this.syncGraph(channels, buses, virtualDi, speakers ?? [], virtualCables ?? []);
+    this.syncGraph(channels, buses, virtualDi, speakers ?? [], virtualCables ?? [], globalDspBypass);
     return this.ctx.state === 'running';
   }
 
@@ -1491,7 +1492,8 @@ class RealTimeConsoleAudioEngine {
     buses: BusNode[],
     virtualDi?: VirtualDiState,
     speakers: SpeakerBand[] = [],
-    virtualCables: VirtualCableNode[] = []
+    virtualCables: VirtualCableNode[] = [],
+    globalDspBypass = false
   ): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -1632,14 +1634,22 @@ class RealTimeConsoleAudioEngine {
       const effectiveMute = ch.mute || (anySolo && !ch.solo);
       const polarity = ch.polarityInvert ? -1 : 1;
       const vdiBoost =
-        virtualDi && virtualDi.sourceChannelId === ch.id && !virtualDi.bypass
+        !globalDspBypass && virtualDi && virtualDi.sourceChannelId === ch.id && !virtualDi.bypass
           ? dbToGain(virtualDi.outputGainDb + virtualDi.inputTrimDb * 0.5)
           : 1;
 
       nodes.trimGain.gain.setTargetAtTime(dbToGain(ch.softwareTrimDb), now, 0.015);
       nodes.polarityGain.gain.setTargetAtTime(polarity, now, 0.01);
-      nodes.delayNode.delayTime.setTargetAtTime(Math.max(0, Math.min(0.2, ch.delayMs / 1000)), now, 0.015);
-      nodes.hpf.frequency.setTargetAtTime(ch.hpfEnabled ? ch.hpfFreqHz : 12, now, 0.02);
+      nodes.delayNode.delayTime.setTargetAtTime(
+        globalDspBypass ? 0 : Math.max(0, Math.min(0.2, ch.delayMs / 1000)),
+        now,
+        0.015
+      );
+      nodes.hpf.frequency.setTargetAtTime(
+        !globalDspBypass && ch.hpfEnabled ? ch.hpfFreqHz : 12,
+        now,
+        0.02
+      );
 
       ch.eqBands.forEach((band, idx) => {
         const filter = nodes!.eqFilters[idx];
@@ -1647,16 +1657,20 @@ class RealTimeConsoleAudioEngine {
         filter.type = eqShapeToBiquadType(band.shape);
         filter.frequency.setTargetAtTime(Math.max(20, Math.min(20000, band.freqHz)), now, 0.02);
         filter.Q.setTargetAtTime(Math.max(0.2, Math.min(20, band.q)), now, 0.02);
-        filter.gain.setTargetAtTime(ch.eqEnabled && band.enabled ? band.gainDb : 0, now, 0.02);
+        filter.gain.setTargetAtTime(
+          !globalDspBypass && ch.eqEnabled && band.enabled ? band.gainDb : 0,
+          now,
+          0.02
+        );
       });
 
       ch.geqBands.forEach((gainDb, idx) => {
         const gf = nodes!.geqFilters[idx];
         if (!gf) return;
-        gf.gain.setTargetAtTime(ch.geqEnabled ? gainDb : 0, now, 0.02);
+        gf.gain.setTargetAtTime(!globalDspBypass && ch.geqEnabled ? gainDb : 0, now, 0.02);
       });
 
-      if (ch.dynamics.compEnabled) {
+      if (!globalDspBypass && ch.dynamics.compEnabled) {
         nodes.comp.threshold.setTargetAtTime(ch.dynamics.compThresholdDb, now, 0.02);
         nodes.comp.ratio.setTargetAtTime(ch.dynamics.compRatio, now, 0.02);
       } else {
@@ -1820,10 +1834,11 @@ class RealTimeConsoleAudioEngine {
     virtualDi?: VirtualDiState,
     speakers?: SpeakerBand[],
     buses?: BusNode[],
-    virtualCables?: VirtualCableNode[]
+    virtualCables?: VirtualCableNode[],
+    globalDspBypass = false
   ): void {
     const resolvedBuses = buses ?? (mainBus ? [mainBus] : []);
-    this.syncGraph(channels, resolvedBuses, virtualDi, speakers ?? [], virtualCables ?? []);
+    this.syncGraph(channels, resolvedBuses, virtualDi, speakers ?? [], virtualCables ?? [], globalDspBypass);
   }
 
   private readAnalyserLevels(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): { peakDbfs: number; rmsDbfs: number } {
@@ -1870,7 +1885,8 @@ class RealTimeConsoleAudioEngine {
     graphVersion: number,
     intelligenceConfig: AudioIntelligenceConfig = DEFAULT_INTELLIGENCE_CONFIG,
     speakers: SpeakerBand[] = [],
-    virtualCables: VirtualCableNode[] = []
+    virtualCables: VirtualCableNode[] = [],
+    globalDspBypass = false
   ): {
     meters: Record<string, MeterReading>;
     spectrum: number[];
@@ -1913,7 +1929,7 @@ class RealTimeConsoleAudioEngine {
         preRms = pre.rmsDbfs;
         postPeak = isMuted ? -80 : post.peakDbfs;
         postRms = isMuted ? -80 : post.rmsDbfs;
-        gr = !isMuted && ch.dynamics.compEnabled ? Math.max(0, Math.abs(nodes.comp.reduction)) : 0;
+        gr = !globalDspBypass && !isMuted && ch.dynamics.compEnabled ? Math.max(0, Math.abs(nodes.comp.reduction)) : 0;
 
         if (!isMuted && speechCategories.has(ch.category) && preRms > -62) {
           const instPower = Math.pow(10, preRms / 10);
@@ -1938,6 +1954,7 @@ class RealTimeConsoleAudioEngine {
 
       let duganGainDb = 0;
       if (
+        !globalDspBypass &&
         intelligenceConfig.duganAutomixEnabled &&
         automixActiveMics >= 2 &&
         speechCategories.has(ch.category) &&
@@ -1950,7 +1967,7 @@ class RealTimeConsoleAudioEngine {
       }
 
       let autoTrimOffsetDb = 0;
-      if (intelligenceConfig.autoLevelerEnabled && isRunning && !lvl.isMuted && lvl.hasSource && lvl.preRms > -58) {
+      if (!globalDspBypass && intelligenceConfig.autoLevelerEnabled && isRunning && !lvl.isMuted && lvl.hasSource && lvl.preRms > -58) {
         const targetRms = speechCategories.has(ch.category) ? -18 : -16;
         const desired = Math.max(-5, Math.min(5, (targetRms - lvl.preRms) * 0.45));
         const prevTrim = this.autoTrimSmoothedDb.get(ch.id) ?? 0;
@@ -1961,7 +1978,7 @@ class RealTimeConsoleAudioEngine {
       }
 
       if (isRunning && nodes && this.ctx) {
-        const totalAutoGain = dbToGain(duganGainDb + autoTrimOffsetDb);
+        const totalAutoGain = globalDspBypass ? 1 : dbToGain(duganGainDb + autoTrimOffsetDb);
         nodes.autoGain.gain.setTargetAtTime(totalAutoGain, this.ctx.currentTime, 0.045);
       }
 

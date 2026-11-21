@@ -106,6 +106,9 @@ interface AudioConsoleContextValue {
 
   audioUnlocked: boolean;
   toggleAudioEngine: () => Promise<void>;
+  globalDspBypass: boolean;
+  toggleGlobalDspBypass: () => void;
+  setGlobalDspBypass: (bypassed: boolean) => void;
   liveMicActive: boolean;
   toggleLiveMic: () => Promise<void>;
   graphVersion: number;
@@ -422,6 +425,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const [dbUpdatedAt, setDbUpdatedAt] = useState<string | null>(null);
 
   const [audioUnlocked, setAudioUnlocked] = useState<boolean>(false);
+  const [globalDspBypass, setGlobalDspBypassState] = useState<boolean>(false);
   const [xrunsCount, setXrunsCount] = useState<number>(0);
 
   const [recordingActive, setRecordingActive] = useState<boolean>(false);
@@ -487,6 +491,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     feedbackIncidents,
     intelligenceConfig,
     systemIntelligence,
+    globalDspBypass,
   });
   stateRef.current = {
     profileId,
@@ -501,6 +506,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     feedbackIncidents,
     intelligenceConfig,
     systemIntelligence,
+    globalDspBypass,
   };
 
   const feedbackRingTrackerRef = useRef<{ freqHz: number; count: number; lastSeenMs: number } | null>(null);
@@ -684,7 +690,8 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         s.graphVersion,
         s.intelligenceConfig,
         s.speakers,
-        s.virtualCables
+        s.virtualCables,
+        s.globalDspBypass
       );
       setMeters(sample.meters);
       setSpectrum(sample.spectrum);
@@ -735,10 +742,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     return () => window.clearInterval(timer);
   }, []);
 
-  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, virtual cables, or Virtual DI change
+  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, virtual cables, Virtual DI, or Global DSP Bypass change
   useEffect(() => {
-    audioEngine.syncGraph(channels, buses, virtualDi, speakers, virtualCables);
-  }, [channels, buses, virtualDi, speakers, virtualCables]);
+    audioEngine.syncGraph(channels, buses, virtualDi, speakers, virtualCables, globalDspBypass);
+  }, [channels, buses, virtualDi, speakers, virtualCables, globalDspBypass]);
 
   const captureSnapshot = useCallback((): ConsoleSnapshotState => {
     return {
@@ -814,7 +821,14 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         message: 'Real-time Web Audio DSP output placed in Standby.',
       });
     } else {
-      const ok = await audioEngine.unlockAndStart(channels, buses, speakers, virtualCables, virtualDi);
+      const ok = await audioEngine.unlockAndStart(
+        channels,
+        buses,
+        speakers,
+        virtualCables,
+        virtualDi,
+        globalDspBypass
+      );
       setAudioUnlocked(ok);
       void scanHardware(false);
       logEvent({
@@ -824,7 +838,27 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         message: `Real-time Web Audio DSP engine engaged at ${(audioEngine.getAudioClockTelemetry().sampleRateHz / 1000).toFixed(1)} kHz.`,
       });
     }
-  }, [audioUnlocked, buses, channels, speakers, virtualCables, virtualDi, logEvent, scanHardware]);
+  }, [audioUnlocked, buses, channels, speakers, virtualCables, virtualDi, globalDspBypass, logEvent, scanHardware]);
+
+  const setGlobalDspBypass = useCallback(
+    (bypassed: boolean) => {
+      setGlobalDspBypassState(bypassed);
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'dsp',
+        severity: bypassed ? 'warning' : 'info',
+        service: 'GlobalDspBypass',
+        message: bypassed
+          ? `Global DSP Bypass ENGAGED across all ${channels.length} channels (HPF, PEQ, 31-band GEQ, dynamics, delay & automix bypassed for A/B compare).`
+          : `Global DSP Bypass DISENGAGED: restored active DSP chains across all ${channels.length} channels.`,
+      });
+    },
+    [channels.length, logEvent]
+  );
+
+  const toggleGlobalDspBypass = useCallback(() => {
+    setGlobalDspBypass(!stateRef.current.globalDspBypass);
+  }, [setGlobalDspBypass]);
 
   const updateBindingOnChannel = useCallback((channelId: string, binding: AudioSourceBinding) => {
     setChannels((prev) =>
@@ -2724,10 +2758,18 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
           label: `CH ${String(ch.number).padStart(2, '0')} · ${ch.name}`,
           domain: 'software',
           connectionKind: 'software',
-          status: ch.mute ? 'muted' : !ch.eqEnabled && !ch.dynamics.compEnabled ? 'bypassed' : 'active',
-          latencyMs: ch.delayMs + (primaryDev ? (primaryDev.bufferSamples / primaryDev.sampleRateHz) * 1000 : 2.7),
+          status: ch.mute
+            ? 'muted'
+            : globalDspBypass || (!ch.eqEnabled && !ch.dynamics.compEnabled)
+              ? 'bypassed'
+              : 'active',
+          latencyMs:
+            (globalDspBypass ? 0 : ch.delayMs) +
+            (primaryDev ? (primaryDev.bufferSamples / primaryDev.sampleRateHz) * 1000 : 2.7),
           meter: meters[ch.id],
-          note: `HPF ${ch.hpfEnabled ? ch.hpfFreqHz + 'Hz' : 'OFF'} · EQ ${ch.eqEnabled ? 'IN' : 'BYP'} · Comp ${ch.dynamics.compEnabled ? ch.dynamics.compRatio + ':1' : 'BYP'}`,
+          note: globalDspBypass
+            ? `[GLOBAL A/B BYPASS] HPF/PEQ/GEQ/Comp/Delay temporarily bypassed`
+            : `HPF ${ch.hpfEnabled ? ch.hpfFreqHz + 'Hz' : 'OFF'} · EQ ${ch.eqEnabled ? 'IN' : 'BYP'} · Comp ${ch.dynamics.compEnabled ? ch.dynamics.compRatio + ':1' : 'BYP'}`,
         };
 
         if (ch.assignMain) {
@@ -2866,7 +2908,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         warnings,
       };
     },
-    [channels, buses, speakers, hardwareProfile, virtualDi, meters, graphVersion]
+    [channels, buses, speakers, hardwareProfile, virtualDi, meters, graphVersion, globalDspBypass]
   );
 
   const clockTelemetry = audioEngine.getAudioClockTelemetry();
@@ -2881,9 +2923,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     : Number((bufferLatencyMs * 2 + 1.45).toFixed(2));
   const cpuDspLoadPct = useMemo(() => {
     const activeSources = channels.filter((c) => c.sourceBinding?.active && !c.mute).length;
-    const eqCount = channels.filter((c) => c.eqEnabled || c.geqEnabled).length;
+    const eqCount = globalDspBypass ? 0 : channels.filter((c) => c.eqEnabled || c.geqEnabled).length;
     return Number((2.1 + activeSources * 1.4 + eqCount * 0.25).toFixed(1));
-  }, [channels]);
+  }, [channels, globalDspBypass]);
 
   const value: AudioConsoleContextValue = {
     activeDestination,
@@ -2923,6 +2965,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     resetFactoryState,
     audioUnlocked,
     toggleAudioEngine,
+    globalDspBypass,
+    toggleGlobalDspBypass,
+    setGlobalDspBypass,
     liveMicActive,
     toggleLiveMic,
     graphVersion,

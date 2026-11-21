@@ -13,6 +13,7 @@ import {
   Moon,
   Gauge,
   Camera,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { useAudioConsole, WORKSPACE_GROUPS } from '../../engine/store';
 import type { ConsoleThemeId, HardwareProfileId, OperatingMode } from '../../engine/types';
@@ -43,6 +44,8 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
     switchHardwareProfile,
     audioUnlocked,
     toggleAudioEngine,
+    globalDspBypass,
+    toggleGlobalDspBypass,
     graphVersion,
     cpuDspLoadPct,
     measuredLatencyMs,
@@ -73,7 +76,7 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
   return (
     <header className="console-header-bar border-b select-none shrink-0 z-30 transition-colors duration-200">
       {/* Primary Console Top Bar */}
-      <div className="px-4 h-12 flex items-center justify-between gap-6 border-b border-white/[0.06]">
+      <div className="px-4 h-12 flex items-center justify-between gap-3 border-b border-white/[0.06]">
         {/* Brand Wordmark */}
         <div className="flex items-center gap-3 shrink-0">
           <div
@@ -88,7 +91,7 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
         </div>
 
         {/* 6 Main Navigation Destinations — Persistent High-Contrast Primary Console Rack */}
-        <nav className="console-nav-rack px-1.5 py-1 rounded-md flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <nav className="console-nav-rack px-1.5 py-1 rounded-md flex items-center gap-1 overflow-x-auto no-scrollbar">
           {WORKSPACE_GROUPS.map((group) => {
             const isActive = group.id === activeDestination;
             return (
@@ -107,7 +110,7 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
         </nav>
 
         {/* Primary Right Controls */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={onOpenSearch}
@@ -146,6 +149,25 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
           >
             <Camera className="w-3.5 h-3.5" />
             <span>Snapshots ({snapshots.length})</span>
+          </button>
+
+          <button
+            type="button"
+            aria-pressed={globalDspBypass}
+            onClick={toggleGlobalDspBypass}
+            className={`px-2.5 py-1.5 rounded text-xs font-medium flex items-center gap-1.5 border transition-all whitespace-nowrap shrink-0 ${
+              globalDspBypass
+                ? 'bg-amber-500/20 text-amber-200 border-amber-400/70 shadow-[0_0_12px_rgba(245,158,11,0.25)] font-semibold'
+                : 'console-btn-surface border-white/15 hover:border-amber-400/50 text-slate-200'
+            }`}
+            title={
+              globalDspBypass
+                ? 'All channel DSP chains are BYPASSED (Dry A/B). Click to restore active HPF, PEQ, 31-Band GEQ, Dynamics & Delay.'
+                : 'Bypass all active channel DSP chains (HPF, PEQ, 31-Band GEQ, Dynamics, Delay) for A/B comparison.'
+            }
+          >
+            <ArrowLeftRight className={`w-3.5 h-3.5 ${globalDspBypass ? 'text-amber-300' : 'text-slate-400'}`} />
+            <span>{globalDspBypass ? 'DSP Bypassed' : 'A/B Bypass'}</span>
           </button>
 
           <button
