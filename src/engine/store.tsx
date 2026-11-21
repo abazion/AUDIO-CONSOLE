@@ -20,6 +20,7 @@ import type {
   BusNode,
   ChannelSendConfig,
   ChannelStrip,
+  ConsoleSnapshotProfile,
   ConsoleThemeId,
   DetectedHardwareDevice,
   EqBand,
@@ -32,6 +33,7 @@ import type {
   MeterReading,
   OperatingMode,
   SceneProfile,
+  SnapshotRestoreScope,
   SoundCheckItem,
   SpeakerBand,
   StructuredEvent,
@@ -77,7 +79,7 @@ interface AudioConsoleContextValue {
   openSignalJourney: (nodeId: string) => void;
   closeSignalJourney: () => void;
 
-  // Source Patchbay Modal & Gain Staging Assistant Modal
+  // Source Patchbay Modal, Gain Staging Assistant & Snapshot Manager Modal
   sourceBayOpen: boolean;
   sourceBayChannelId: string;
   openSourceBay: (channelId?: string) => void;
@@ -86,6 +88,9 @@ interface AudioConsoleContextValue {
   gainStagingChannelId: string | null;
   openGainStagingAssistant: (channelId?: string) => void;
   closeGainStagingAssistant: () => void;
+  snapshotModalOpen: boolean;
+  openSnapshotManager: () => void;
+  closeSnapshotManager: () => void;
 
   // Hardware, DB Persistence & Engine State
   hardwareProfile: HardwareProfile;
@@ -171,6 +176,8 @@ interface AudioConsoleContextValue {
   soundCheckItems: SoundCheckItem[];
   scenes: SceneProfile[];
   activeSceneId: string;
+  snapshots: ConsoleSnapshotProfile[];
+  activeSnapshotId: string | null;
   proposals: AiProposal[];
   events: StructuredEvent[];
 
@@ -200,6 +207,20 @@ interface AudioConsoleContextValue {
   runSoundCheckItem: (itemId: string, operatorAuthorized?: boolean) => void;
   recallScene: (sceneId: string) => void;
   saveCurrentAsScene: (name: string, serviceType: string) => void;
+  saveSnapshot: (
+    name: string,
+    category?: string,
+    notes?: string,
+    overwriteId?: string
+  ) => ConsoleSnapshotProfile;
+  restoreSnapshot: (
+    snapshotId: string,
+    scope?: SnapshotRestoreScope
+  ) => { ok: boolean; summary: string };
+  deleteSnapshot: (snapshotId: string) => void;
+  importSnapshotJson: (
+    rawJson: string
+  ) => { ok: boolean; importedCount: number; error?: string };
   addProposals: (items: AiProposal[]) => void;
   applyProposal: (proposalId: string) => void;
   dismissProposal: (proposalId: string) => void;
@@ -209,6 +230,50 @@ interface AudioConsoleContextValue {
   redo: () => void;
   traceSignalJourney: (nodeId: string, direction?: 'forward' | 'reverse' | 'both') => GraphTraceResult;
   logEvent: (evt: Omit<StructuredEvent, 'id' | 'timestamp' | 'graphVersion'>) => void;
+}
+
+const LOCAL_SNAPSHOTS_STORAGE_KEY = 'church_console_snapshots_v1';
+
+function cloneValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function loadLocalSnapshots(): ConsoleSnapshotProfile[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SNAPSHOTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (item): item is ConsoleSnapshotProfile =>
+        Boolean(item) &&
+        typeof item.id === 'string' &&
+        typeof item.name === 'string' &&
+        Array.isArray(item.channels) &&
+        Array.isArray(item.buses) &&
+        Array.isArray(item.speakers)
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mergeSnapshots(
+  primary: ConsoleSnapshotProfile[],
+  secondary: ConsoleSnapshotProfile[]
+): ConsoleSnapshotProfile[] {
+  const map = new Map<string, ConsoleSnapshotProfile>();
+  for (const item of [...secondary, ...primary]) {
+    if (!item || typeof item.id !== 'string') continue;
+    const prev = map.get(item.id);
+    if (!prev || String(item.updatedAt) >= String(prev.updatedAt)) {
+      map.set(item.id, item);
+    }
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    String(b.updatedAt).localeCompare(String(a.updatedAt))
+  );
 }
 
 const AudioConsoleContext = createContext<AudioConsoleContextValue | null>(null);
@@ -332,6 +397,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const [sourceBayChannelId, setSourceBayChannelId] = useState<string>('ch-01');
   const [gainStagingOpen, setGainStagingOpen] = useState<boolean>(false);
   const [gainStagingChannelId, setGainStagingChannelId] = useState<string | null>(null);
+  const [snapshotModalOpen, setSnapshotModalOpen] = useState<boolean>(false);
 
   const [profileId, setProfileId] = useState<HardwareProfileId>('auto-detected');
   const [detectedHardware, setDetectedHardware] = useState<DetectedHardwareDevice[]>([]);
@@ -346,6 +412,8 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const [soundCheckItems, setSoundCheckItems] = useState<SoundCheckItem[]>(INITIAL_SOUND_CHECK);
   const [scenes, setScenes] = useState<SceneProfile[]>(INITIAL_SCENES);
   const [activeSceneId, setActiveSceneId] = useState<string>('scn-sunday');
+  const [snapshots, setSnapshots] = useState<ConsoleSnapshotProfile[]>(() => loadLocalSnapshots());
+  const [activeSnapshotId, setActiveSnapshotId] = useState<string | null>(null);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
 
   const [graphVersion, setGraphVersion] = useState<number>(1);
@@ -506,6 +574,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
             if (data.virtualDi) setVirtualDi(data.virtualDi);
             if (Array.isArray(data.proposals)) setProposals(data.proposals);
             if (Array.isArray(data.scenes)) setScenes(data.scenes);
+            if (Array.isArray(data.snapshots)) {
+              setSnapshots((localPrev) => mergeSnapshots(data.snapshots, localPrev));
+            }
             if (Array.isArray(data.hardwareInventory)) setDetectedHardware(data.hardwareInventory);
             if (Array.isArray(data.feedbackIncidents)) setFeedbackIncidents(data.feedbackIncidents);
             if (Array.isArray(data.soundCheckItems)) setSoundCheckItems(data.soundCheckItems);
@@ -552,6 +623,16 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       document.documentElement.setAttribute('data-console-theme', workspaceTheme);
     }
   }, [workspaceTheme]);
+
+  // Persist Console Snapshot Profiles to local browser profile storage
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(LOCAL_SNAPSHOTS_STORAGE_KEY, JSON.stringify(snapshots));
+    } catch {
+      // Ignore storage quota errors cleanly
+    }
+  }, [snapshots]);
 
   // Debounced DB state persistence whenever core mixer state updates after hydration
   useEffect(() => {
@@ -708,6 +789,14 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const closeGainStagingAssistant = useCallback(() => {
     setGainStagingOpen(false);
+  }, []);
+
+  const openSnapshotManager = useCallback(() => {
+    setSnapshotModalOpen(true);
+  }, []);
+
+  const closeSnapshotManager = useCallback(() => {
+    setSnapshotModalOpen(false);
   }, []);
 
   const resetPeakHold = useCallback((nodeId?: string) => {
@@ -1972,6 +2061,468 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     [channels, buses, virtualDi.tubeSaturationPct, logEvent]
   );
 
+  const saveSnapshot = useCallback(
+    (
+      name: string,
+      category = 'Sunday Worship',
+      notes = '',
+      overwriteId?: string
+    ): ConsoleSnapshotProfile => {
+      const nowIso = new Date().toISOString();
+      const existing = overwriteId ? snapshots.find((s) => s.id === overwriteId) : undefined;
+      const sanitizedChannels = cloneValue(channels).map((ch) => ({
+        ...ch,
+        sourceBinding: ch.sourceBinding
+          ? { ...ch.sourceBinding, active: false }
+          : undefined,
+      }));
+      const sanitizedVirtualCables = cloneValue(virtualCables).map((vc) => ({
+        ...vc,
+        active: vc.sourceKind === 'external-tab' || vc.sourceKind === 'media-deck' ? false : vc.active,
+      }));
+
+      const snapshot: ConsoleSnapshotProfile = {
+        id: existing?.id ?? `snap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: name.trim() || existing?.name || `Console Snapshot ${snapshots.length + 1}`,
+        category: category.trim() || existing?.category || 'Custom',
+        notes: notes.trim(),
+        createdAt: existing?.createdAt ?? nowIso,
+        updatedAt: nowIso,
+        profileId,
+        workspaceTheme,
+        channels: sanitizedChannels,
+        buses: cloneValue(buses),
+        speakers: cloneValue(speakers),
+        virtualCables: sanitizedVirtualCables,
+        virtualDi: cloneValue(virtualDi),
+      };
+
+      setSnapshots((prev) =>
+        mergeSnapshots([snapshot], prev.filter((s) => s.id !== snapshot.id))
+      );
+      setActiveSnapshotId(snapshot.id);
+      void fetch('/api/console/snapshots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ snapshot }),
+      }).catch(() => {});
+
+      logEvent({
+        family: 'scene',
+        severity: 'info',
+        service: 'SnapshotManager',
+        message: `${existing ? 'Updated' : 'Saved'} console snapshot "${snapshot.name}" (${snapshot.channels.length} ch, ${snapshot.buses.length} buses, ${snapshot.speakers.length} outputs).`,
+      });
+
+      return snapshot;
+    },
+    [snapshots, channels, virtualCables, profileId, workspaceTheme, buses, speakers, virtualDi, logEvent]
+  );
+
+  const restoreSnapshot = useCallback(
+    (snapshotId: string, scope: SnapshotRestoreScope = 'all') => {
+      const target = snapshots.find((s) => s.id === snapshotId);
+      if (!target) {
+        return { ok: false, summary: 'Snapshot not found in local profile.' };
+      }
+
+      pushUndo();
+
+      const snapChannelMap = new Map<string, ChannelStrip>(
+        target.channels.map((ch) => [ch.id, ch])
+      );
+      const snapBusMap = new Map<string, BusNode>(target.buses.map((b) => [b.id, b]));
+      const snapSpeakerMap = new Map<string, SpeakerBand>(target.speakers.map((s) => [s.id, s]));
+      const snapCableMap = new Map<string, VirtualCableNode>(
+        (target.virtualCables ?? []).map((v) => [v.id, v])
+      );
+      const isManualPreamp =
+        hardwareProfile.devices[0]?.capabilities.preampGain === 'manual';
+
+      let summary = '';
+
+      if (scope === 'all') {
+        channels.forEach((existingCh) => {
+          if (existingCh.sourceBinding?.active && !snapChannelMap.has(existingCh.id)) {
+            audioEngine.detachChannelSource(existingCh.id);
+          }
+        });
+
+        const nextChannels = cloneValue(target.channels).map((ch) => {
+          const liveExisting = channels.find((c) => c.id === ch.id);
+          if (liveExisting?.sourceBinding?.active) {
+            return {
+              ...ch,
+              sourceBinding: liveExisting.sourceBinding,
+              physicalPort: liveExisting.physicalPort,
+            };
+          }
+          return {
+            ...ch,
+            hardwarePreampDb: isManualPreamp
+              ? (liveExisting?.hardwarePreampDb ?? ch.hardwarePreampDb)
+              : ch.hardwarePreampDb,
+          };
+        });
+
+        const nextBuses = cloneValue(target.buses);
+        const nextSpeakers = cloneValue(target.speakers);
+        const nextCables = cloneValue(target.virtualCables ?? virtualCables).map((vc) => {
+          const liveCable = virtualCables.find((c) => c.id === vc.id);
+          if (liveCable && (liveCable.sourceKind === 'external-tab' || liveCable.sourceKind === 'media-deck') && liveCable.active) {
+            return {
+              ...vc,
+              sourceKind: liveCable.sourceKind,
+              sourceLabel: liveCable.sourceLabel,
+              active: true,
+            };
+          }
+          return vc;
+        });
+
+        setProfileId(target.profileId);
+        if (target.workspaceTheme) setWorkspaceTheme(target.workspaceTheme);
+        setChannels(nextChannels);
+        setBuses(nextBuses);
+        setSpeakers(nextSpeakers);
+        setVirtualCables(nextCables);
+        setVirtualDi(cloneValue(target.virtualDi));
+        if (nextChannels.length > 0 && !nextChannels.some((c) => c.id === selectedChannelId)) {
+          setSelectedChannelId(nextChannels[0].id);
+        }
+        if (nextBuses.length > 0 && !nextBuses.some((b) => b.id === selectedBusId)) {
+          setSelectedBusId(nextBuses[0].id);
+        }
+
+        summary = `Restored full console snapshot "${target.name}" (${nextChannels.length} channels, ${nextBuses.length} buses, ${nextSpeakers.length} outputs).`;
+      } else if (scope === 'routing') {
+        setChannels((prev) =>
+          prev.map((ch) => {
+            const snap = snapChannelMap.get(ch.id);
+            if (!snap) return ch;
+            return {
+              ...ch,
+              assignMain: snap.assignMain,
+              assignSub: snap.assignSub,
+              assignBroadcast: snap.assignBroadcast,
+              dcaGroup: snap.dcaGroup,
+              muteGroup: snap.muteGroup,
+              sends: cloneValue(snap.sends),
+            };
+          })
+        );
+
+        setBuses((prev) => {
+          const prevMap = new Map(prev.map((b) => [b.id, b]));
+          return cloneValue(target.buses).map((snapBus) => {
+            const liveBus = prevMap.get(snapBus.id);
+            return liveBus
+              ? {
+                  ...liveBus,
+                  name: snapBus.name,
+                  shortName: snapBus.shortName,
+                  kind: snapBus.kind,
+                  assignedOutputId: snapBus.assignedOutputId,
+                }
+              : snapBus;
+          });
+        });
+
+        setSpeakers((prev) => {
+          const prevMap = new Map(prev.map((s) => [s.id, s]));
+          return cloneValue(target.speakers).map((snapSpk) => {
+            const liveSpk = prevMap.get(snapSpk.id);
+            return liveSpk
+              ? {
+                  ...snapSpk,
+                  eqEnabled: liveSpk.eqEnabled,
+                  eqBands: liveSpk.eqBands,
+                  gainDb: liveSpk.gainDb,
+                  limiterThresholdDb: liveSpk.limiterThresholdDb,
+                  mute: liveSpk.mute,
+                }
+              : snapSpk;
+          });
+        });
+
+        if (Array.isArray(target.virtualCables)) {
+          setVirtualCables((prev) => {
+            const prevMap = new Map(prev.map((v) => [v.id, v]));
+            return cloneValue(target.virtualCables).map((vc) => {
+              const live = prevMap.get(vc.id);
+              if (live && (live.sourceKind === 'external-tab' || live.sourceKind === 'media-deck') && live.active) {
+                return { ...vc, sourceKind: live.sourceKind, sourceLabel: live.sourceLabel, active: true };
+              }
+              return vc;
+            });
+          });
+        }
+
+        summary = `Restored routing, bus matrix, speaker outputs & virtual cables from "${target.name}".`;
+      } else if (scope === 'eq') {
+        setChannels((prev) =>
+          prev.map((ch) => {
+            const snap = snapChannelMap.get(ch.id);
+            if (!snap) return ch;
+            return {
+              ...ch,
+              hpfEnabled: snap.hpfEnabled,
+              hpfFreqHz: snap.hpfFreqHz,
+              eqEnabled: snap.eqEnabled,
+              eqBands: cloneValue(snap.eqBands),
+              geqEnabled: snap.geqEnabled,
+              geqBands: cloneValue(snap.geqBands),
+              dynamics: cloneValue(snap.dynamics),
+              delayMs: snap.delayMs,
+            };
+          })
+        );
+
+        setBuses((prev) =>
+          prev.map((b) => {
+            const snap = snapBusMap.get(b.id);
+            if (!snap) return b;
+            return {
+              ...b,
+              eqEnabled: snap.eqEnabled,
+              eqBands: snap.eqBands ? cloneValue(snap.eqBands) : b.eqBands,
+              limiterCeilingDb: snap.limiterCeilingDb,
+            };
+          })
+        );
+
+        setSpeakers((prev) =>
+          prev.map((s) => {
+            const snap = snapSpeakerMap.get(s.id);
+            if (!snap) return s;
+            return {
+              ...s,
+              hpfHz: snap.hpfHz,
+              hpfSlope: snap.hpfSlope,
+              lpfHz: snap.lpfHz,
+              lpfSlope: snap.lpfSlope,
+              crossoverBypass: snap.crossoverBypass,
+              family: snap.family,
+              eqEnabled: snap.eqEnabled,
+              eqBands: snap.eqBands ? cloneValue(snap.eqBands) : s.eqBands,
+              subBoostEnabled: snap.subBoostEnabled,
+              subBoostFreqHz: snap.subBoostFreqHz,
+              subBoostGainDb: snap.subBoostGainDb,
+              limiterThresholdDb: snap.limiterThresholdDb,
+            };
+          })
+        );
+
+        setVirtualDi((prev) => ({
+          ...prev,
+          bypass: target.virtualDi.bypass,
+          abSlot: target.virtualDi.abSlot,
+          hpfHz: target.virtualDi.hpfHz,
+          subHarmonicBoostDb: target.virtualDi.subHarmonicBoostDb,
+          midScoopDb: target.virtualDi.midScoopDb,
+          presenceDb: target.virtualDi.presenceDb,
+          compThresholdDb: target.virtualDi.compThresholdDb,
+          compRatio: target.virtualDi.compRatio,
+          transientAttack: target.virtualDi.transientAttack,
+          tubeSaturationPct: target.virtualDi.tubeSaturationPct,
+          limiterCeilingDb: target.virtualDi.limiterCeilingDb,
+        }));
+
+        summary = `Restored PEQ, 31-band GEQ, HPF, crossovers & dynamics from "${target.name}".`;
+      } else if (scope === 'gains') {
+        setChannels((prev) =>
+          prev.map((ch) => {
+            const snap = snapChannelMap.get(ch.id);
+            if (!snap) return ch;
+            return {
+              ...ch,
+              hardwarePreampDb: isManualPreamp ? ch.hardwarePreampDb : snap.hardwarePreampDb,
+              softwareTrimDb: snap.softwareTrimDb,
+              faderDb: snap.faderDb,
+              mute: snap.mute,
+              pan: snap.pan,
+              polarityInvert: snap.polarityInvert,
+            };
+          })
+        );
+
+        setBuses((prev) =>
+          prev.map((b) => {
+            const snap = snapBusMap.get(b.id);
+            if (!snap) return b;
+            return {
+              ...b,
+              faderDb: snap.faderDb,
+              mute: snap.mute,
+            };
+          })
+        );
+
+        setSpeakers((prev) =>
+          prev.map((s) => {
+            const snap = snapSpeakerMap.get(s.id);
+            if (!snap) return s;
+            return {
+              ...s,
+              gainDb: snap.gainDb,
+              mute: snap.mute,
+              delayMs: snap.delayMs,
+            };
+          })
+        );
+
+        setVirtualCables((prev) =>
+          prev.map((vc) => {
+            const snap = snapCableMap.get(vc.id);
+            if (!snap) return vc;
+            return {
+              ...vc,
+              gainDb: snap.gainDb,
+            };
+          })
+        );
+
+        setVirtualDi((prev) => ({
+          ...prev,
+          inputTrimDb: target.virtualDi.inputTrimDb,
+          outputGainDb: target.virtualDi.outputGainDb,
+        }));
+
+        summary = `Restored trim gains, faders, mutes & output levels from "${target.name}".`;
+      }
+
+      setActiveSnapshotId(target.id);
+      setGraphVersion((v) => v + 1);
+
+      logEvent({
+        family: 'scene',
+        severity: 'info',
+        service: 'SnapshotManager',
+        message: summary,
+      });
+
+      return { ok: true, summary };
+    },
+    [
+      snapshots,
+      pushUndo,
+      hardwareProfile,
+      channels,
+      virtualCables,
+      selectedChannelId,
+      selectedBusId,
+      logEvent,
+    ]
+  );
+
+  const deleteSnapshot = useCallback(
+    (snapshotId: string) => {
+      const removed = snapshots.find((s) => s.id === snapshotId);
+      setSnapshots((prev) => prev.filter((s) => s.id !== snapshotId));
+      if (activeSnapshotId === snapshotId) {
+        setActiveSnapshotId(null);
+      }
+      void fetch(`/api/console/snapshots/${encodeURIComponent(snapshotId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+      if (removed) {
+        logEvent({
+          family: 'scene',
+          severity: 'info',
+          service: 'SnapshotManager',
+          message: `Deleted console snapshot "${removed.name}".`,
+        });
+      }
+    },
+    [snapshots, activeSnapshotId, logEvent]
+  );
+
+  const importSnapshotJson = useCallback(
+    (rawJson: string): { ok: boolean; importedCount: number; error?: string } => {
+      try {
+        const parsed = JSON.parse(rawJson);
+        const candidates: unknown[] = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.snapshots)
+            ? parsed.snapshots
+            : [parsed];
+
+        const valid: ConsoleSnapshotProfile[] = [];
+        const existingIds = new Set(snapshots.map((s) => s.id));
+        const nowIso = new Date().toISOString();
+
+        candidates.forEach((raw, idx) => {
+          if (!raw || typeof raw !== 'object') return;
+          const item = raw as Partial<ConsoleSnapshotProfile>;
+          if (
+            typeof item.name !== 'string' ||
+            !Array.isArray(item.channels) ||
+            !Array.isArray(item.buses) ||
+            !Array.isArray(item.speakers)
+          ) {
+            return;
+          }
+          const id =
+            typeof item.id === 'string' && !existingIds.has(item.id)
+              ? item.id
+              : `snap-imp-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`;
+          existingIds.add(id);
+
+          valid.push({
+            id,
+            name: item.name.trim() || `Imported Snapshot ${idx + 1}`,
+            category: typeof item.category === 'string' ? item.category : 'Imported',
+            notes: typeof item.notes === 'string' ? item.notes : '',
+            createdAt: typeof item.createdAt === 'string' ? item.createdAt : nowIso,
+            updatedAt: nowIso,
+            profileId: item.profileId ?? profileId,
+            workspaceTheme: item.workspaceTheme ?? workspaceTheme,
+            channels: item.channels,
+            buses: item.buses,
+            speakers: item.speakers,
+            virtualCables: Array.isArray(item.virtualCables)
+              ? item.virtualCables
+              : cloneValue(virtualCables),
+            virtualDi: item.virtualDi ?? cloneValue(virtualDi),
+          });
+        });
+
+        if (valid.length === 0) {
+          return {
+            ok: false,
+            importedCount: 0,
+            error: 'No valid console snapshots found in JSON file.',
+          };
+        }
+
+        setSnapshots((prev) => mergeSnapshots(valid, prev));
+        valid.forEach((snapshot) => {
+          void fetch('/api/console/snapshots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ snapshot }),
+          }).catch(() => {});
+        });
+
+        logEvent({
+          family: 'scene',
+          severity: 'info',
+          service: 'SnapshotManager',
+          message: `Imported ${valid.length} console snapshot profile(s) into local & SQLite bank.`,
+        });
+
+        return { ok: true, importedCount: valid.length };
+      } catch (err) {
+        return {
+          ok: false,
+          importedCount: 0,
+          error: err instanceof Error ? err.message : 'Invalid JSON snapshot format.',
+        };
+      }
+    },
+    [snapshots, profileId, workspaceTheme, virtualCables, virtualDi, logEvent]
+  );
+
   const addProposals = useCallback((items: AiProposal[]) => {
     setProposals((prev) => [...items, ...prev]);
   }, []);
@@ -2357,6 +2908,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     gainStagingChannelId,
     openGainStagingAssistant,
     closeGainStagingAssistant,
+    snapshotModalOpen,
+    openSnapshotManager,
+    closeSnapshotManager,
     hardwareProfile,
     switchHardwareProfile,
     detectedHardware,
@@ -2429,6 +2983,8 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     soundCheckItems,
     scenes,
     activeSceneId,
+    snapshots,
+    activeSnapshotId,
     proposals,
     events,
     meters,
@@ -2450,6 +3006,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     runSoundCheckItem,
     recallScene,
     saveCurrentAsScene,
+    saveSnapshot,
+    restoreSnapshot,
+    deleteSnapshot,
+    importSnapshotJson,
     addProposals,
     applyProposal,
     dismissProposal,

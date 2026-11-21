@@ -5,6 +5,7 @@ import type {
   AiProposal,
   BusNode,
   ChannelStrip,
+  ConsoleSnapshotProfile,
   ConsoleThemeId,
   DetectedHardwareDevice,
   FeedbackIncident,
@@ -44,6 +45,7 @@ export interface PersistedConsoleStatePayload {
 
 export interface BootstrapPayload extends PersistedConsoleStatePayload {
   scenes: SceneProfile[];
+  snapshots: ConsoleSnapshotProfile[];
   hardwareInventory: DetectedHardwareDevice[];
   feedbackIncidents: FeedbackIncident[];
   soundCheckItems: SoundCheckItem[];
@@ -133,6 +135,16 @@ function getDb(): DatabaseSync {
       graph_version INTEGER NOT NULL,
       node_id TEXT,
       message TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS console_snapshots (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      notes TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload_json TEXT NOT NULL
     );
   `);
 
@@ -409,6 +421,37 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
       ? parsedCables
       : defaults.virtualCables;
 
+  const snapshotRows = db
+    .prepare(
+      `SELECT id, name, category, notes, created_at, updated_at, payload_json
+       FROM console_snapshots ORDER BY updated_at DESC`
+    )
+    .all() as {
+    id: string;
+    name: string;
+    category: string;
+    notes: string;
+    created_at: string;
+    updated_at: string;
+    payload_json: string;
+  }[];
+
+  const snapshots: ConsoleSnapshotProfile[] = snapshotRows.map((snap) => {
+    const p = JSON.parse(snap.payload_json) as Omit<
+      ConsoleSnapshotProfile,
+      'id' | 'name' | 'category' | 'notes' | 'createdAt' | 'updatedAt'
+    >;
+    return {
+      id: snap.id,
+      name: snap.name,
+      category: snap.category,
+      notes: snap.notes,
+      createdAt: snap.created_at,
+      updatedAt: snap.updated_at,
+      ...p,
+    };
+  });
+
   return {
     profileId: row.profile_id as HardwareProfileId,
     workspaceTheme: (row.theme_id || 'obsidian-brass') as ConsoleThemeId,
@@ -421,6 +464,7 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     virtualDi: JSON.parse(row.virtual_di_json) as VirtualDiState,
     proposals: JSON.parse(row.proposals_json) as AiProposal[],
     scenes,
+    snapshots,
     hardwareInventory,
     feedbackIncidents,
     soundCheckItems,
@@ -569,6 +613,41 @@ export function insertEvent(ev: StructuredEvent): void {
   db.prepare(
     `DELETE FROM events WHERE rowid NOT IN (SELECT rowid FROM events ORDER BY rowid DESC LIMIT 200)`
   ).run();
+}
+
+export function upsertSnapshot(snapshot: ConsoleSnapshotProfile): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO console_snapshots (id, name, category, notes, created_at, updated_at, payload_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name,
+       category = excluded.category,
+       notes = excluded.notes,
+       updated_at = excluded.updated_at,
+       payload_json = excluded.payload_json`
+  ).run(
+    snapshot.id,
+    snapshot.name,
+    snapshot.category,
+    snapshot.notes,
+    snapshot.createdAt,
+    snapshot.updatedAt,
+    JSON.stringify({
+      profileId: snapshot.profileId,
+      workspaceTheme: snapshot.workspaceTheme,
+      channels: snapshot.channels,
+      buses: snapshot.buses,
+      speakers: snapshot.speakers,
+      virtualCables: snapshot.virtualCables,
+      virtualDi: snapshot.virtualDi,
+    })
+  );
+}
+
+export function deleteSnapshotById(id: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM console_snapshots WHERE id = ?').run(id);
 }
 
 export function resetFactoryData(defaults: ConsoleFactoryDefaults): BootstrapPayload {

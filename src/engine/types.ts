@@ -312,6 +312,24 @@ export interface SceneProfile {
   virtualDiSaturation: number;
 }
 
+export type SnapshotRestoreScope = 'all' | 'routing' | 'eq' | 'gains';
+
+export interface ConsoleSnapshotProfile {
+  id: string;
+  name: string;
+  category: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  profileId: HardwareProfileId;
+  workspaceTheme: ConsoleThemeId;
+  channels: ChannelStrip[];
+  buses: BusNode[];
+  speakers: SpeakerBand[];
+  virtualCables: VirtualCableNode[];
+  virtualDi: VirtualDiState;
+}
+
 export interface AiProposal {
   id: string;
   title: string;

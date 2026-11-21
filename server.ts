@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 import {
+  deleteSnapshotById,
   getBootstrapData,
   insertEvent,
   resetFactoryData,
@@ -15,6 +16,7 @@ import {
   updateSoundCheckItem,
   upsertFeedbackIncident,
   upsertScene,
+  upsertSnapshot,
 } from './server/db.ts';
 import {
   INITIAL_BUSES,
@@ -26,6 +28,7 @@ import {
   INITIAL_VIRTUAL_DI,
 } from './src/engine/profiles.ts';
 import type {
+  ConsoleSnapshotProfile,
   ConsoleThemeId,
   DetectedHardwareDevice,
   FeedbackIncident,
@@ -264,6 +267,45 @@ async function startServer() {
     } catch (err: unknown) {
       res.status(500).json({
         error: err instanceof Error ? err.message : 'Failed to save scene.',
+      });
+    }
+  });
+
+  app.post('/api/console/snapshots', (req, res) => {
+    try {
+      const snapshot = req.body?.snapshot as ConsoleSnapshotProfile | undefined;
+      if (
+        !snapshot ||
+        !isNonEmptyString(snapshot.id, 128) ||
+        !isNonEmptyString(snapshot.name, 160) ||
+        !Array.isArray(snapshot.channels) ||
+        !Array.isArray(snapshot.buses) ||
+        !Array.isArray(snapshot.speakers)
+      ) {
+        res.status(400).json({ error: 'Valid full console snapshot object required.' });
+        return;
+      }
+      upsertSnapshot(snapshot);
+      res.json({ ok: true, snapshotId: snapshot.id });
+    } catch (err: unknown) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to save console snapshot.',
+      });
+    }
+  });
+
+  app.delete('/api/console/snapshots/:id', (req, res) => {
+    try {
+      const id = req.params.id;
+      if (!isNonEmptyString(id, 128)) {
+        res.status(400).json({ error: 'Valid snapshot ID required.' });
+        return;
+      }
+      deleteSnapshotById(id);
+      res.json({ ok: true });
+    } catch (err: unknown) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to delete console snapshot.',
       });
     }
   });

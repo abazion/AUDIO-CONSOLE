@@ -12,6 +12,7 @@ import {
   Sun,
   Moon,
   Gauge,
+  Camera,
 } from 'lucide-react';
 import { useAudioConsole, WORKSPACE_GROUPS } from '../../engine/store';
 import type { ConsoleThemeId, HardwareProfileId, OperatingMode } from '../../engine/types';
@@ -52,6 +53,8 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
     selectedChannelId,
     openSourceBay,
     openGainStagingAssistant,
+    snapshots,
+    openSnapshotManager,
     detectedHardware,
     channels,
   } = useAudioConsole();
@@ -133,6 +136,16 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
           >
             <Gauge className="w-3.5 h-3.5" />
             <span>Gain Assist</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openSnapshotManager}
+            className="px-2.5 py-1.5 rounded console-btn-surface border-violet-500/40 hover:border-violet-400 text-xs text-violet-300 flex items-center gap-1.5 whitespace-nowrap shrink-0 tabular-nums"
+            title="Save or Restore Full Console Snapshot Profiles (Routing, EQ, Gains)"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>Snapshots ({snapshots.length})</span>
           </button>
 
           <button

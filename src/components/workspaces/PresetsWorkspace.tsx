@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { BookmarkCheck, Lock, Plus, Sliders } from 'lucide-react';
+import { BookmarkCheck, Camera, Lock, Plus, Sliders } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
 import { ConsoleButton } from '../hardware/ConsoleButton';
 
@@ -11,6 +11,8 @@ export const PresetsWorkspace: React.FC = () => {
     hardwareProfile,
     recallScene,
     saveCurrentAsScene,
+    snapshots,
+    openSnapshotManager,
   } = useAudioConsole();
 
   const [previewSceneId, setPreviewSceneId] = useState<string>(scenes[1]?.id ?? scenes[0].id);
@@ -76,13 +78,23 @@ export const PresetsWorkspace: React.FC = () => {
           })}
         </div>
 
-        <ConsoleButton
-          label={previewScene.id === activeSceneId ? 'SCENE ACTIVE' : 'RECALL SCENE'}
-          size="xs"
-          color="amber"
-          active={previewScene.id !== activeSceneId}
-          onClick={() => recallScene(previewScene.id)}
-        />
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={openSnapshotManager}
+            className="px-2.5 py-1 rounded console-btn-surface border-violet-500/40 hover:border-violet-400 text-[10px] font-mono text-violet-300 flex items-center gap-1.5 whitespace-nowrap tabular-nums"
+          >
+            <Camera className="w-3 h-3" />
+            <span>FULL SNAPSHOTS ({snapshots.length})</span>
+          </button>
+          <ConsoleButton
+            label={previewScene.id === activeSceneId ? 'SCENE ACTIVE' : 'RECALL SCENE'}
+            size="xs"
+            color="amber"
+            active={previewScene.id !== activeSceneId}
+            onClick={() => recallScene(previewScene.id)}
+          />
+        </div>
       </div>
 
       {/* Main Single-Viewport Workspace */}
