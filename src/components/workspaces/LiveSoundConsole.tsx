@@ -46,10 +46,12 @@ const SelectedChannelEqCurve: React.FC<{
   channel: ChannelStrip;
   compact?: boolean;
   bypassed?: boolean;
+  spectrum?: number[];
 }> = ({
   channel,
   compact = false,
   bypassed = false,
+  spectrum = [],
 }) => {
   const path = useMemo(() => {
     const w = 320;
@@ -80,6 +82,29 @@ const SelectedChannelEqCurve: React.FC<{
     channel.geqBands,
   ]);
 
+  const { rtaPath, rtaPeakPath } = useMemo(() => {
+    if (!spectrum || spectrum.length === 0) {
+      return { rtaPath: null, rtaPeakPath: null };
+    }
+    const w = 320;
+    const h = 84;
+    const pts: string[] = [];
+    const peakPts: string[] = [];
+    spectrum.forEach((db, i) => {
+      const freq = 20 * Math.pow(1000, i / Math.max(1, spectrum.length - 1));
+      const minLog = Math.log10(20);
+      const maxLog = Math.log10(20000);
+      const x = ((Math.log10(Math.max(20, Math.min(20000, freq))) - minLog) / (maxLog - minLog)) * w;
+      const y = h - Math.max(0, Math.min(1, (db + 72) / 72)) * (h - 8);
+      pts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+      peakPts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${Math.max(4, y - 2).toFixed(1)}`);
+    });
+    return {
+      rtaPath: `${pts.join(' ')} L ${w} ${h} L 0 ${h} Z`,
+      rtaPeakPath: peakPts.join(' '),
+    };
+  }, [spectrum]);
+
   return (
     <div className="w-full dark-instrument-scope rounded-md px-2 py-1.5">
       <svg viewBox="0 0 320 84" className={`w-full ${compact ? 'h-16' : 'h-20'}`}>
@@ -89,6 +114,23 @@ const SelectedChannelEqCurve: React.FC<{
         <line x1="0" y1="21" x2="320" y2="21" stroke="rgba(148,163,184,0.1)" strokeWidth="0.7" />
         <line x1="0" y1="42" x2="320" y2="42" stroke="rgba(255,255,255,0.22)" strokeWidth="0.9" />
         <line x1="0" y1="63" x2="320" y2="63" stroke="rgba(148,163,184,0.1)" strokeWidth="0.7" />
+        {rtaPath && (
+          <path
+            d={rtaPath}
+            fill="rgba(56, 189, 248, 0.16)"
+            stroke="rgba(56, 189, 248, 0.38)"
+            strokeWidth="0.8"
+          />
+        )}
+        {rtaPeakPath && (
+          <path
+            d={rtaPeakPath}
+            fill="none"
+            stroke="rgba(52, 211, 153, 0.5)"
+            strokeWidth="0.9"
+            strokeDasharray="2 2"
+          />
+        )}
         <path
           d={path}
           fill="none"
@@ -797,7 +839,12 @@ export const LiveSoundConsole: React.FC = () => {
                   </span>
                 </div>
 
-                <SelectedChannelEqCurve channel={selectedChannel} compact bypassed={globalDspBypass} />
+                <SelectedChannelEqCurve
+                  channel={selectedChannel}
+                  compact
+                  bypassed={globalDspBypass}
+                  spectrum={spectrum}
+                />
 
                 <div className="grid grid-cols-4 gap-1.5">
                   <RotaryKnob
@@ -1382,15 +1429,25 @@ export const LiveSoundConsole: React.FC = () => {
                   >
                     <div className="w-full space-y-1">
                       <div className="w-full console-well rounded px-1.5 py-0.5 flex items-center justify-between text-[8px] font-mono">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            m?.clipping || peakHoldClipped
-                              ? 'bg-rose-500 shadow-[0_0_6px_#f43f5e]'
-                              : m?.signalPresent
-                                ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
-                                : 'bg-slate-700'
-                          }`}
-                        />
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              m?.clipping || peakHoldClipped
+                                ? 'bg-rose-500 shadow-[0_0_6px_#f43f5e]'
+                                : m?.signalPresent
+                                  ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
+                                  : 'bg-slate-700'
+                            }`}
+                          />
+                          {ch.muteSafe && (
+                            <span
+                              className="px-1 py-[0.5px] rounded bg-emerald-500/25 border border-emerald-400/50 text-emerald-200 text-[7px] font-bold shrink-0"
+                              title="Mute-Safe Active: Protected from global scene mutes"
+                            >
+                              SAFE
+                            </span>
+                          )}
+                        </div>
                         <span className="tabular-nums text-slate-300">
                           {m?.signalPresent ? `${m.rmsDbfs.toFixed(0)}dB` : 'IDLE'}
                         </span>
@@ -1414,6 +1471,7 @@ export const LiveSoundConsole: React.FC = () => {
                         selected={isSelected}
                         onSelect={() => setSelectedChannelId(ch.id)}
                         onOpenSource={() => openSourceBay(ch.id)}
+                        onToggleDcaSpill={(dca) => setActiveDcaSpill(activeDcaSpill === dca ? null : dca)}
                         isManualHardwarePreamp={isManualPreamp}
                       />
 
@@ -1445,9 +1503,9 @@ export const LiveSoundConsole: React.FC = () => {
                               onClick={() => updateChannel(ch.id, { solo: !ch.solo })}
                             />
                             <ConsoleButton
-                              label="MUTE"
+                              label={ch.mute ? 'MUTED' : ch.muteSafe ? 'SAFE' : 'MUTE'}
                               size="xs"
-                              color="crimson"
+                              color={ch.mute ? 'crimson' : ch.muteSafe ? 'emerald' : 'crimson'}
                               active={ch.mute}
                               onClick={() => updateChannel(ch.id, { mute: !ch.mute })}
                             />

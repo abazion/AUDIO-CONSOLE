@@ -1,11 +1,12 @@
 import React from 'react';
-import type { ChannelStrip } from '../../engine/types';
+import type { ChannelStrip, DcaGroupId } from '../../engine/types';
 
 interface ScribbleStripProps {
   channel: ChannelStrip;
   selected: boolean;
   onSelect: () => void;
   onOpenSource?: () => void;
+  onToggleDcaSpill?: (dca: DcaGroupId) => void;
   isManualHardwarePreamp: boolean;
 }
 
@@ -23,6 +24,7 @@ export const ScribbleStrip: React.FC<ScribbleStripProps> = ({
   selected,
   onSelect,
   onOpenSource,
+  onToggleDcaSpill,
   isManualHardwarePreamp,
 }) => {
   const binding = channel.sourceBinding;
@@ -53,7 +55,23 @@ export const ScribbleStrip: React.FC<ScribbleStripProps> = ({
       <div className={`h-1 w-full ${COLOR_BAR[channel.color]}`} />
       <div className="px-1.5 py-1">
         <div className="flex items-center justify-between text-[9px] font-mono text-slate-400">
-          <span>CH {String(channel.number).padStart(2, '0')}</span>
+          <div className="flex items-center gap-1 min-w-0">
+            <span>CH {String(channel.number).padStart(2, '0')}</span>
+            {channel.dcaGroup && (
+              <span
+                onClick={(e) => {
+                  if (onToggleDcaSpill) {
+                    e.stopPropagation();
+                    onToggleDcaSpill(channel.dcaGroup!);
+                  }
+                }}
+                className="px-1 py-[0.5px] rounded bg-amber-500/20 border border-amber-400/50 text-amber-200 text-[8px] font-bold hover:bg-amber-500/35 transition-colors"
+                title={`DCA Group ${channel.dcaGroup} · Click to Spill`}
+              >
+                {channel.dcaGroup}
+              </span>
+            )}
+          </div>
           <span
             onClick={(e) => {
               if (onOpenSource) {
