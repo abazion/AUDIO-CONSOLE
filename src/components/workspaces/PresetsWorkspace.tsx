@@ -148,7 +148,7 @@ export const PresetsWorkspace: React.FC = () => {
               />
             </div>
 
-            <div className="flex-1 min-h-0 console-well rounded p-2.5 grid grid-cols-6 gap-2">
+            <div className="flex-1 min-h-0 console-well rounded p-2.5 grid grid-cols-4 sm:grid-cols-6 gap-2 overflow-y-auto content-start">
               {channelPreviewRows.map(({ ch, targetFader, targetMute, changed }) => {
                 const targetNorm = Math.max(0.05, Math.min(1, (targetFader + 80) / 90));
                 const curNorm = Math.max(0.05, Math.min(1, (ch.faderDb + 80) / 90));
@@ -212,7 +212,7 @@ export const PresetsWorkspace: React.FC = () => {
                 Capture Active Console State to Scene Memory
               </h2>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Snapshots all 12 channel faders, mutes, 4-band + 31-band EQ, active crossover, and subwoofer boost into SQLite.
+                Snapshots all {channels.length} channel faders, mutes, parametric + 31-band EQ, active crossovers, and output sinks into SQLite.
               </p>
             </div>
 
@@ -265,7 +265,7 @@ export const PresetsWorkspace: React.FC = () => {
             <div className="text-xs font-mono font-semibold text-sky-300 uppercase border-b border-white/10 pb-2">
               Current Channel Levels to Be Captured
             </div>
-            <div className="flex-1 min-h-0 console-well rounded p-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div className="flex-1 min-h-0 console-well rounded p-3 grid grid-cols-2 sm:grid-cols-3 gap-2 overflow-y-auto content-start">
               {channels.map((ch) => (
                 <div key={ch.id} className="console-panel rounded px-2.5 py-2 flex items-center justify-between">
                   <span className="text-[11px] font-medium text-slate-200 truncate">{ch.shortName}</span>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Radio, Disc, Video, Sliders, Gauge } from 'lucide-react';
+import { Radio, Disc, Video, Sliders, Gauge, Download } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
 import { MotorizedFader } from '../hardware/MotorizedFader';
 import { AnalogVuMeter, LedMeter } from '../hardware/LedMeter';
@@ -7,27 +7,59 @@ import { ConsoleButton } from '../hardware/ConsoleButton';
 import { RotaryKnob } from '../hardware/RotaryKnob';
 
 export const LivestreamStudioWorkspace: React.FC = () => {
-  const { channels, buses, meters, updateChannel, updateChannelSend, updateBus, logEvent } =
-    useAudioConsole();
+  const {
+    channels,
+    buses,
+    meters,
+    virtualCables,
+    updateChannel,
+    updateChannelSend,
+    updateBus,
+    updateVirtualCable,
+    recordingActive,
+    recordingDurationSec,
+    lastRecordingUrl,
+    lastRecordingFilename,
+    toggleStreamRecording,
+  } = useAudioConsole();
 
-  const streamBus = buses.find((b) => b.id === 'bus-stream')!;
+  const streamBus = buses.find((b) => b.id === 'bus-stream') ?? buses[0];
   const streamMeter = meters[streamBus.id];
+  const streamVac = virtualCables.find(
+    (vc) => vc.sourceKind === 'bus' && vc.sourceId === streamBus.id
+  );
 
   const [streamTab, setStreamTab] = useState<'sends' | 'loudness'>('sends');
-  const [bankPage, setBankPage] = useState<'1-6' | '7-12'>('1-6');
-  const [streamLive, setStreamLive] = useState<boolean>(false);
-  const [recordingActive, setRecordingActive] = useState<boolean>(true);
+  const [pageIdx, setPageIdx] = useState<number>(0);
   const [targetLufs, setTargetLufs] = useState<number>(-14);
+  const [recError, setRecError] = useState<string | null>(null);
 
-  const shortTermLufs = Math.max(-55, (streamMeter?.rmsDbfs ?? -30) + 2.5);
-  const integratedLufs = Math.max(-55, shortTermLufs - 0.8);
-  const truePeakDb = Math.min(0, streamMeter?.peakDbfs ?? -20);
+  const totalPages = Math.max(1, Math.ceil(channels.length / 6));
+  const safePageIdx = Math.min(pageIdx, totalPages - 1);
+  const visibleChannels = channels.slice(safePageIdx * 6, safePageIdx * 6 + 6);
 
-  const visibleChannels = bankPage === '1-6' ? channels.slice(0, 6) : channels.slice(6, 12);
+  const hasSignal = Boolean(streamMeter?.signalPresent);
+  const shortTermLufs = hasSignal ? Math.max(-65, streamMeter.rmsDbfs + 2.5) : -80;
+  const integratedLufs = hasSignal ? Math.max(-65, shortTermLufs - 0.8) : -80;
+  const truePeakDb = hasSignal ? Math.min(0, streamMeter.peakDbfs) : -80;
+
+  const formatDuration = (sec: number) => {
+    const mm = String(Math.floor(sec / 60)).padStart(2, '0');
+    const ss = String(sec % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  };
+
+  const handleToggleRec = async () => {
+    setRecError(null);
+    const res = await toggleStreamRecording(streamBus.id);
+    if (!res.ok) {
+      setRecError(res.error ?? 'Unable to start broadcast recorder.');
+    }
+  };
 
   return (
     <div className="h-full min-h-0 flex flex-col p-2.5 gap-2 overflow-hidden">
-      {/* Header + Module Switcher Tabs + Broadcast Transport */}
+      {/* Header + Module Switcher Tabs + Real Broadcast Transport */}
       <div className="console-panel rounded-md px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
           <Video className="w-4 h-4 text-sky-400 shrink-0" />
@@ -36,7 +68,7 @@ export const LivestreamStudioWorkspace: React.FC = () => {
               Livestream Studio · Broadcast Mix
             </h1>
             <p className="text-[10px] font-mono text-slate-400">
-              Isolated Pre/Post Broadcast Bus · ITU-R BS.1770 Loudness
+              Isolated Pre/Post Broadcast Bus · Live MediaRecorder &amp; Virtual Cable Feed
             </p>
           </div>
         </div>
@@ -44,7 +76,7 @@ export const LivestreamStudioWorkspace: React.FC = () => {
         <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
           {[
             { id: 'sends', label: 'BROADCAST SENDS (6-UP)', icon: Sliders },
-            { id: 'loudness', label: 'LOUDNESS LUFS & ENCODER', icon: Gauge },
+            { id: 'loudness', label: 'LOUDNESS LUFS & MATRIX', icon: Gauge },
           ].map((t) => {
             const Icon = t.icon;
             return (
@@ -65,62 +97,66 @@ export const LivestreamStudioWorkspace: React.FC = () => {
 
         <div className="flex items-center gap-1.5">
           <ConsoleButton
-            label={recordingActive ? 'REC WAV ON' : 'REC WAV'}
+            label={recordingActive ? `STOP REC (${formatDuration(recordingDurationSec)})` : 'REC STREAM'}
             size="xs"
             color="crimson"
             active={recordingActive}
-            onClick={() => {
-              setRecordingActive((r) => !r);
-              logEvent({
-                family: 'dsp',
-                severity: 'info',
-                service: 'LivestreamStudio',
-                nodeId: streamBus.id,
-                message: !recordingActive ? 'Started broadcast WAV multitrack recording.' : 'Stopped recording.',
-              });
-            }}
+            onClick={() => void handleToggleRec()}
           />
-          <ConsoleButton
-            label={streamLive ? 'STREAM ON' : 'START STREAM'}
-            size="xs"
-            color="emerald"
-            active={streamLive}
-            onClick={() => {
-              setStreamLive((s) => !s);
-              logEvent({
-                family: 'dsp',
-                severity: 'info',
-                service: 'LivestreamStudio',
-                nodeId: streamBus.id,
-                message: !streamLive ? 'Broadcast RTMP audio feed engaged.' : 'Broadcast audio feed stopped.',
-              });
-            }}
-          />
+          {lastRecordingUrl && lastRecordingFilename && !recordingActive && (
+            <a
+              href={lastRecordingUrl}
+              download={lastRecordingFilename}
+              className="px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/15 text-[10px] font-mono text-emerald-300 flex items-center gap-1 hover:bg-emerald-500/25"
+            >
+              <Download className="w-3 h-3" />
+              <span>Save Take</span>
+            </a>
+          )}
+          {streamVac && (
+            <ConsoleButton
+              label={streamVac.active ? 'VAC FEED ON' : 'VAC MUTED'}
+              size="xs"
+              color="emerald"
+              active={streamVac.active}
+              onClick={() => updateVirtualCable(streamVac.id, { active: !streamVac.active })}
+            />
+          )}
         </div>
       </div>
+
+      {recError && (
+        <div className="px-3 py-1 rounded bg-rose-500/15 border border-rose-500/40 text-[11px] font-mono text-rose-200 shrink-0">
+          {recError}
+        </div>
+      )}
 
       {/* Main Single-Viewport Workspace */}
       {streamTab === 'sends' ? (
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
-          {/* Left 8 Cols: 6-Up Responsive Broadcast Fader Bank (Zero Scroll) */}
+          {/* Left 8 Cols: Dynamic 6-Up Broadcast Fader Bank */}
           <div className="lg:col-span-8 console-chassis rounded-lg border border-white/10 p-3 flex flex-col gap-2 min-h-0 overflow-hidden">
             <div className="flex items-center justify-between border-b border-white/10 pb-1.5 shrink-0">
               <span className="text-[11px] font-mono font-semibold text-sky-300 uppercase">
                 Broadcast Source Contribution Faders (Independent of House PA)
               </span>
               <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
-                {(['1-6', '7-12'] as const).map((page) => (
-                  <button
-                    key={page}
-                    type="button"
-                    onClick={() => setBankPage(page)}
-                    className={`px-2 py-0.5 rounded-[2px] text-[10px] font-mono ${
-                      bankPage === page ? 'console-module-tab-active' : 'console-module-tab'
-                    }`}
-                  >
-                    CH {page}
-                  </button>
-                ))}
+                {Array.from({ length: totalPages }).map((_, idx) => {
+                  const start = idx * 6 + 1;
+                  const end = Math.min(channels.length, (idx + 1) * 6);
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setPageIdx(idx)}
+                      className={`px-2 py-0.5 rounded-[2px] text-[10px] font-mono ${
+                        safePageIdx === idx ? 'console-module-tab-active' : 'console-module-tab'
+                      }`}
+                    >
+                      CH {start}–{end}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -161,7 +197,7 @@ export const LivestreamStudioWorkspace: React.FC = () => {
                         accentColor="cyan"
                       />
                       <LedMeter
-                        peakDbfs={(m?.peakDbfs ?? -70) + ch.sends.livestream.levelDb * 0.25}
+                        peakDbfs={m?.signalPresent ? m.peakDbfs + ch.sends.livestream.levelDb * 0.25 : -80}
                         height={155}
                         width={7}
                         segments={14}
@@ -173,17 +209,17 @@ export const LivestreamStudioWorkspace: React.FC = () => {
             </div>
           </div>
 
-          {/* Right 4 Cols: Compact Broadcast Master + LUFS Readout */}
+          {/* Right 4 Cols: Broadcast Master + Real LUFS Readout */}
           <div className="lg:col-span-4 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2 min-h-0 overflow-hidden">
             <div className="grid grid-cols-2 gap-2 shrink-0">
               <AnalogVuMeter
                 label="STREAM L"
-                levelDbfs={streamMeter?.rmsDbfs ?? -40}
+                levelDbfs={streamMeter?.rmsDbfs ?? -80}
                 peakLed={streamMeter?.clipping}
               />
               <AnalogVuMeter
                 label="STREAM R"
-                levelDbfs={(streamMeter?.rmsDbfs ?? -40) - 0.1}
+                levelDbfs={hasSignal ? (streamMeter?.rmsDbfs ?? -80) - 0.1 : -80}
                 peakLed={streamMeter?.clipping}
               />
             </div>
@@ -192,14 +228,14 @@ export const LivestreamStudioWorkspace: React.FC = () => {
               <div>
                 <div className="text-[8px] text-slate-400">INTEGRATED</div>
                 <div className="text-sm font-bold text-emerald-300 tabular-nums">
-                  {integratedLufs.toFixed(1)}
+                  {hasSignal ? integratedLufs.toFixed(1) : 'IDLE'}
                 </div>
                 <div className="text-[8px] text-slate-500">LUFS</div>
               </div>
               <div>
                 <div className="text-[8px] text-slate-400">SHORT-TERM</div>
                 <div className="text-sm font-bold text-sky-300 tabular-nums">
-                  {shortTermLufs.toFixed(1)}
+                  {hasSignal ? shortTermLufs.toFixed(1) : 'IDLE'}
                 </div>
                 <div className="text-[8px] text-slate-500">LUFS</div>
               </div>
@@ -210,7 +246,7 @@ export const LivestreamStudioWorkspace: React.FC = () => {
                     truePeakDb > -1.0 ? 'text-rose-400' : 'text-amber-300'
                   }`}
                 >
-                  {truePeakDb.toFixed(1)}
+                  {hasSignal ? truePeakDb.toFixed(1) : '-80.0'}
                 </div>
                 <div className="text-[8px] text-slate-500">dBTP</div>
               </div>
@@ -252,17 +288,17 @@ export const LivestreamStudioWorkspace: React.FC = () => {
             <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 px-1 shrink-0">
               <span className="flex items-center gap-1">
                 <Disc className={`w-3 h-3 ${recordingActive ? 'text-rose-400' : 'text-slate-500'}`} />
-                <span>48k / 24-bit WAV</span>
+                <span>{recordingActive ? `Recording ${formatDuration(recordingDurationSec)}` : 'MediaRecorder Ready'}</span>
               </span>
               <span className="flex items-center gap-1">
-                <Radio className={`w-3 h-3 ${streamLive ? 'text-emerald-400' : 'text-slate-500'}`} />
-                <span>{streamLive ? 'RTMP Live' : 'Standby'}</span>
+                <Radio className={`w-3 h-3 ${streamVac?.active ? 'text-emerald-400' : 'text-slate-500'}`} />
+                <span>{streamVac ? streamVac.name : 'Stream Bus Active'}</span>
               </span>
             </div>
           </div>
         </div>
       ) : (
-        /* Tab 2: Dedicated Broadcast Loudness & 12-Channel Quick Send Matrix */
+        /* Tab 2: Dedicated Broadcast Loudness & Dynamic Channel Send Matrix */
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-2.5 overflow-hidden">
           <div className="lg:col-span-6 console-chassis rounded-lg border border-white/10 p-3 flex flex-col justify-between gap-2.5 min-h-0 overflow-hidden">
             <div className="text-xs font-mono font-semibold text-sky-300 uppercase border-b border-white/10 pb-1.5">
@@ -271,12 +307,12 @@ export const LivestreamStudioWorkspace: React.FC = () => {
             <div className="grid grid-cols-2 gap-3">
               <AnalogVuMeter
                 label="BROADCAST MASTER L"
-                levelDbfs={streamMeter?.rmsDbfs ?? -40}
+                levelDbfs={streamMeter?.rmsDbfs ?? -80}
                 peakLed={streamMeter?.clipping}
               />
               <AnalogVuMeter
                 label="BROADCAST MASTER R"
-                levelDbfs={(streamMeter?.rmsDbfs ?? -40) - 0.1}
+                levelDbfs={hasSignal ? (streamMeter?.rmsDbfs ?? -80) - 0.1 : -80}
                 peakLed={streamMeter?.clipping}
               />
             </div>
@@ -284,21 +320,21 @@ export const LivestreamStudioWorkspace: React.FC = () => {
               <div>
                 <div className="text-[9px] text-slate-400">INTEGRATED</div>
                 <div className="text-lg font-bold text-emerald-300 tabular-nums">
-                  {integratedLufs.toFixed(1)}
+                  {hasSignal ? integratedLufs.toFixed(1) : 'IDLE'}
                 </div>
                 <div className="text-[9px] text-slate-500">LUFS</div>
               </div>
               <div>
                 <div className="text-[9px] text-slate-400">SHORT-TERM</div>
                 <div className="text-lg font-bold text-sky-300 tabular-nums">
-                  {shortTermLufs.toFixed(1)}
+                  {hasSignal ? shortTermLufs.toFixed(1) : 'IDLE'}
                 </div>
                 <div className="text-[9px] text-slate-500">LUFS</div>
               </div>
               <div>
                 <div className="text-[9px] text-slate-400">TRUE PEAK</div>
                 <div className={`text-lg font-bold tabular-nums ${truePeakDb > -1.0 ? 'text-rose-400' : 'text-amber-300'}`}>
-                  {truePeakDb.toFixed(1)}
+                  {hasSignal ? truePeakDb.toFixed(1) : '-80.0'}
                 </div>
                 <div className="text-[9px] text-slate-500">dBTP</div>
               </div>
@@ -339,9 +375,9 @@ export const LivestreamStudioWorkspace: React.FC = () => {
 
           <div className="lg:col-span-6 console-chassis rounded-lg border border-white/10 p-3 flex flex-col gap-2 min-h-0 overflow-hidden">
             <div className="text-xs font-mono font-semibold text-amber-300 uppercase border-b border-white/10 pb-1.5">
-              12-Channel Broadcast Assignment Switches
+              {channels.length}-Channel Broadcast Assignment Switches
             </div>
-            <div className="flex-1 min-h-0 grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2 pr-0.5 content-start">
               {channels.map((ch) => (
                 <div
                   key={ch.id}

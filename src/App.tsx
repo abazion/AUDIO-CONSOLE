@@ -6,6 +6,7 @@ import { SystemTelemetryPanel } from './components/shell/SystemTelemetryPanel';
 import { SignalJourneyModal } from './components/shell/SignalJourneyModal';
 import { GlobalSearchModal } from './components/shell/GlobalSearchModal';
 import { AudioSourcePatchModal } from './components/shell/AudioSourcePatchModal';
+import { GainStagingAssistantModal } from './components/shell/GainStagingAssistantModal';
 import { MasterSystemOverview } from './components/workspaces/MasterSystemOverview';
 import { LiveSoundConsole } from './components/workspaces/LiveSoundConsole';
 import { MicIntelligenceWorkspace } from './components/workspaces/MicIntelligenceWorkspace';
@@ -86,6 +87,7 @@ function ConsoleShell() {
       <TransportStrip />
       <SignalJourneyModal />
       <AudioSourcePatchModal />
+      <GainStagingAssistantModal />
       <GlobalSearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );

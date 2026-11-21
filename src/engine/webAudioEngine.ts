@@ -7,6 +7,7 @@ import type {
   EqBand,
   MeterReading,
   SpeakerBand,
+  VirtualCableNode,
   VirtualDiState,
 } from './types';
 import {
@@ -32,6 +33,21 @@ export const ISO_31_CENTERS = [
   800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500,
   16000, 20000,
 ];
+
+function eqShapeToBiquadType(shape: EqBand['shape']): BiquadFilterType {
+  switch (shape) {
+    case 'low-shelf':
+      return 'lowshelf';
+    case 'high-shelf':
+      return 'highshelf';
+    case 'notch':
+      return 'notch';
+    case 'band-pass':
+      return 'bandpass';
+    default:
+      return 'peaking';
+  }
+}
 
 export function computeChannelEqResponseDb(
   freqHz: number,
@@ -105,10 +121,14 @@ export function computeCrossoverResponseDb(
   const lpfOrder = orderFromSlope(band.lpfSlope);
 
   const hpRatio = freqHz / Math.max(16, band.hpfHz);
-  const hpMagSq = Math.pow(hpRatio, 2 * hpfOrder) / (1 + Math.pow(hpRatio, 2 * hpfOrder));
+  const hpMagSq = band.crossoverBypass
+    ? 1
+    : Math.pow(hpRatio, 2 * hpfOrder) / (1 + Math.pow(hpRatio, 2 * hpfOrder));
 
   const lpRatio = Math.max(20, band.lpfHz) / freqHz;
-  const lpMagSq = Math.pow(lpRatio, 2 * lpfOrder) / (1 + Math.pow(lpRatio, 2 * lpfOrder));
+  const lpMagSq = band.crossoverBypass
+    ? 1
+    : Math.pow(lpRatio, 2 * lpfOrder) / (1 + Math.pow(lpRatio, 2 * lpfOrder));
 
   const subBoost =
     band.subBoostEnabled && (band.subBoostGainDb ?? 0) > 0
@@ -121,20 +141,28 @@ export function computeCrossoverResponseDb(
         )
       : 0;
 
+  let eqContrib = 0;
+  if (band.eqEnabled !== false && band.eqBands && band.eqBands.length > 0) {
+    eqContrib = computeChannelEqResponseDb(freqHz, false, 20, true, band.eqBands, false);
+  }
+
   const magDb =
     band.gainDb +
     subBoost +
+    eqContrib +
     10 * Math.log10(Math.max(1e-7, hpMagSq)) +
     10 * Math.log10(Math.max(1e-7, lpMagSq)) +
     familyOffset(band.family) * 0.15;
 
   const phaseShift =
     (band.polarityInvert ? 180 : 0) +
-    Math.atan2(1, Math.pow(hpRatio, hpfOrder * 0.5)) * (180 / Math.PI) -
-    Math.atan2(1, Math.pow(lpRatio, lpfOrder * 0.5)) * (180 / Math.PI);
+    (band.crossoverBypass
+      ? 0
+      : Math.atan2(1, Math.pow(hpRatio, hpfOrder * 0.5)) * (180 / Math.PI) -
+        Math.atan2(1, Math.pow(lpRatio, lpfOrder * 0.5)) * (180 / Math.PI));
 
   return {
-    magDb: Math.max(-36, Math.min(12, magDb)),
+    magDb: Math.max(-36, Math.min(18, magDb)),
     phaseDeg: ((phaseShift + 180) % 360) - 180,
   };
 }
@@ -148,6 +176,7 @@ interface AttachedChannelSource {
   toneOsc?: OscillatorNode;
   toneNoise?: AudioBufferSourceNode;
   toneGain?: GainNode;
+  virtualCableId?: string;
 }
 
 interface ChannelAudioNodes {
@@ -155,16 +184,66 @@ interface ChannelAudioNodes {
   preAnalyser: AnalyserNode;
   trimGain: GainNode;
   autoGain: GainNode;
+  polarityGain: GainNode;
+  delayNode: DelayNode;
   hpf: BiquadFilterNode;
   eqFilters: BiquadFilterNode[];
+  eqFilterCount: number;
   geqFilters: BiquadFilterNode[];
   comp: DynamicsCompressorNode;
   faderGain: GainNode;
   panner: StereoPannerNode;
   postAnalyser: AnalyserNode;
+  sendGains: Map<string, { gain: GainNode; preFader: boolean }>;
   preTimeDomain: Float32Array<ArrayBuffer>;
   preFreqData: Float32Array<ArrayBuffer>;
   postTimeDomain: Float32Array<ArrayBuffer>;
+}
+
+interface BusAudioNodes {
+  sumGain: GainNode;
+  eqFilters: BiquadFilterNode[];
+  eqFilterCount: number;
+  limiter: DynamicsCompressorNode;
+  faderGain: GainNode;
+  analyser: AnalyserNode;
+  streamDest: MediaStreamAudioDestinationNode;
+  timeDomain: Float32Array<ArrayBuffer>;
+}
+
+interface SpeakerAudioNodes {
+  inputGain: GainNode;
+  sourceBusId: string;
+  hpfFilters: BiquadFilterNode[];
+  hpfStagesCount: number;
+  lpfFilters: BiquadFilterNode[];
+  lpfStagesCount: number;
+  eqFilters: BiquadFilterNode[];
+  eqFilterCount: number;
+  subBoost: BiquadFilterNode;
+  polarityGain: GainNode;
+  delayNode: DelayNode;
+  gainNode: GainNode;
+  panner: StereoPannerNode;
+  limiter: DynamicsCompressorNode;
+  analyser: AnalyserNode;
+  sinkKind: 'master-mix' | 'device-sink' | 'virtual-cable';
+  sinkTargetId: string;
+  sinkStreamDest?: MediaStreamAudioDestinationNode;
+  sinkAudioEl?: HTMLAudioElement;
+  timeDomain: Float32Array<ArrayBuffer>;
+}
+
+interface VirtualCableAudioNodes {
+  inputSum: GainNode;
+  gainNode: GainNode;
+  analyser: AnalyserNode;
+  streamDest: MediaStreamAudioDestinationNode;
+  monitorGain: GainNode;
+  attachedBusTap?: { busId: string; tapGain: GainNode };
+  attachedChannelTap?: { channelId: string; tapGain: GainNode };
+  externalSource?: AttachedChannelSource;
+  timeDomain: Float32Array<ArrayBuffer>;
 }
 
 export interface AudioClockTelemetry {
@@ -230,11 +309,33 @@ function classifyDriver(label: string): DetectedHardwareDevice['driverClass'] {
   return 'System Integrated';
 }
 
+function detectFundamentalFromFft(freqData: Float32Array<ArrayBuffer>, sampleRateHz: number): number {
+  const nyquist = sampleRateHz / 2;
+  const binCount = freqData.length;
+  const minIdx = Math.max(1, Math.floor((35 / nyquist) * binCount));
+  const maxIdx = Math.min(binCount - 2, Math.ceil((2200 / nyquist) * binCount));
+  let bestIdx = -1;
+  let bestVal = -64;
+  for (let i = minIdx; i <= maxIdx; i++) {
+    const val = freqData[i];
+    if (Number.isFinite(val) && val > bestVal) {
+      bestVal = val;
+      bestIdx = i;
+    }
+  }
+  if (bestIdx <= 0) return 0;
+  // Parabolic interpolation for sub-bin accuracy
+  const left = freqData[bestIdx - 1] ?? bestVal;
+  const right = freqData[bestIdx + 1] ?? bestVal;
+  const denom = left - 2 * bestVal + right;
+  const offset = Math.abs(denom) > 1e-4 ? (0.5 * (left - right)) / denom : 0;
+  const interpIdx = Math.max(1, bestIdx + Math.max(-0.5, Math.min(0.5, offset)));
+  return Math.round((interpIdx / binCount) * nyquist);
+}
+
 class RealTimeConsoleAudioEngine {
   private ctx: AudioContext | null = null;
-  private masterGain: GainNode | null = null;
-  private subBoostFilter: BiquadFilterNode | null = null;
-  private masterLimiter: DynamicsCompressorNode | null = null;
+  private masterMonitorSum: GainNode | null = null;
   private masterAnalyser: AnalyserNode | null = null;
   private masterFreqData: Float32Array<ArrayBuffer> | null = null;
   private masterTimeData: Float32Array<ArrayBuffer> | null = null;
@@ -245,11 +346,24 @@ class RealTimeConsoleAudioEngine {
 
   private channelNodes = new Map<string, ChannelAudioNodes>();
   private channelSources = new Map<string, AttachedChannelSource>();
-  private peakHolds = new Map<string, { value: number; expiresAt: number }>();
+  private busNodes = new Map<string, BusAudioNodes>();
+  private speakerNodes = new Map<string, SpeakerAudioNodes>();
+  private virtualCableNodes = new Map<string, VirtualCableAudioNodes>();
+
+  private peakHolds = new Map<string, { value: number; clipped: boolean }>();
+  private noiseFloorMap = new Map<string, number>();
+  private grHistoryMap = new Map<string, number[]>();
   private duganSmoothedPower = new Map<string, number>();
   private autoTrimSmoothedDb = new Map<string, number>();
   private spectrumBins = new Float32Array(64);
   private roomSpectrumBins = new Float32Array(64);
+
+  private activeRecorder: {
+    recorder: MediaRecorder;
+    chunks: Blob[];
+    targetId: string;
+    startedAt: number;
+  } | null = null;
 
   public isAudioUnlocked(): boolean {
     return this.ctx !== null && this.ctx.state === 'running';
@@ -321,8 +435,10 @@ class RealTimeConsoleAudioEngine {
 
   public async unlockAndStart(
     channels: ChannelStrip[],
-    mainBus: BusNode,
-    speakers?: SpeakerBand[]
+    buses: BusNode[],
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[],
+    virtualDi?: VirtualDiState
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
     if (!this.ctx) {
@@ -331,19 +447,8 @@ class RealTimeConsoleAudioEngine {
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new AudioCtx({ sampleRate: 48000, latencyHint: 'interactive' });
 
-      this.masterGain = this.ctx.createGain();
-
-      this.subBoostFilter = this.ctx.createBiquadFilter();
-      this.subBoostFilter.type = 'peaking';
-      this.subBoostFilter.frequency.value = 44;
-      this.subBoostFilter.Q.value = 0.9;
-      this.subBoostFilter.gain.value = 0;
-
-      this.masterLimiter = this.ctx.createDynamicsCompressor();
-      this.masterLimiter.threshold.value = mainBus.limiterCeilingDb;
-      this.masterLimiter.ratio.value = 12;
-      this.masterLimiter.attack.value = 0.002;
-      this.masterLimiter.release.value = 0.08;
+      this.masterMonitorSum = this.ctx.createGain();
+      this.masterMonitorSum.gain.value = 1.0;
 
       this.masterAnalyser = this.ctx.createAnalyser();
       this.masterAnalyser.fftSize = 2048;
@@ -351,20 +456,14 @@ class RealTimeConsoleAudioEngine {
       this.masterFreqData = new Float32Array(new ArrayBuffer(this.masterAnalyser.frequencyBinCount * 4));
       this.masterTimeData = new Float32Array(new ArrayBuffer(this.masterAnalyser.fftSize * 4));
 
-      this.masterGain.connect(this.subBoostFilter);
-      this.subBoostFilter.connect(this.masterLimiter);
-      this.masterLimiter.connect(this.masterAnalyser);
+      this.masterMonitorSum.connect(this.masterAnalyser);
       this.masterAnalyser.connect(this.ctx.destination);
-
-      for (const ch of channels) {
-        this.createChannelChain(ch);
-      }
     }
 
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
-    this.syncChannels(channels, mainBus, undefined, speakers);
+    this.syncGraph(channels, buses, virtualDi, speakers ?? [], virtualCables ?? []);
     return this.ctx.state === 'running';
   }
 
@@ -374,46 +473,130 @@ class RealTimeConsoleAudioEngine {
     }
   }
 
-  private createChannelChain(ch: ChannelStrip): void {
-    if (!this.ctx || !this.masterGain) return;
+  public resetPeakHold(nodeId?: string): void {
+    if (nodeId) {
+      this.peakHolds.delete(nodeId);
+    } else {
+      this.peakHolds.clear();
+    }
+  }
 
-    const inputSumGain = this.ctx.createGain();
+  private createBusChain(bus: BusNode): BusAudioNodes {
+    const ctx = this.ctx!;
+    const sumGain = ctx.createGain();
+    sumGain.gain.value = 1.0;
+
+    const eqBands = bus.eqBands ?? [];
+    const eqFilters = eqBands.map((band) => {
+      const f = ctx.createBiquadFilter();
+      f.type = eqShapeToBiquadType(band.shape);
+      f.frequency.value = Math.max(20, Math.min(20000, band.freqHz));
+      f.gain.value = bus.eqEnabled && band.enabled ? band.gainDb : 0;
+      f.Q.value = Math.max(0.2, Math.min(20, band.q));
+      return f;
+    });
+
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = bus.limiterCeilingDb;
+    limiter.ratio.value = 12;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.08;
+
+    const faderGain = ctx.createGain();
+    faderGain.gain.value = bus.mute ? 0 : dbToGain(bus.faderDb);
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.7;
+
+    const streamDest = ctx.createMediaStreamDestination();
+
+    let prev: AudioNode = sumGain;
+    for (const eq of eqFilters) {
+      prev.connect(eq);
+      prev = eq;
+    }
+    prev.connect(limiter);
+    limiter.connect(faderGain);
+    faderGain.connect(analyser);
+    analyser.connect(streamDest);
+
+    const nodes: BusAudioNodes = {
+      sumGain,
+      eqFilters,
+      eqFilterCount: eqFilters.length,
+      limiter,
+      faderGain,
+      analyser,
+      streamDest,
+      timeDomain: new Float32Array(new ArrayBuffer(analyser.fftSize * 4)),
+    };
+    this.busNodes.set(bus.id, nodes);
+    return nodes;
+  }
+
+  private rebuildBusEq(bus: BusNode, nodes: BusAudioNodes): void {
+    if (!this.ctx) return;
+    try {
+      nodes.sumGain.disconnect();
+      nodes.eqFilters.forEach((f) => f.disconnect());
+    } catch {
+      // safe disconnect
+    }
+    const eqBands = bus.eqBands ?? [];
+    nodes.eqFilters = eqBands.map((band) => {
+      const f = this.ctx!.createBiquadFilter();
+      f.type = eqShapeToBiquadType(band.shape);
+      f.frequency.value = Math.max(20, Math.min(20000, band.freqHz));
+      f.gain.value = bus.eqEnabled && band.enabled ? band.gainDb : 0;
+      f.Q.value = Math.max(0.2, Math.min(20, band.q));
+      return f;
+    });
+    nodes.eqFilterCount = nodes.eqFilters.length;
+    let prev: AudioNode = nodes.sumGain;
+    for (const eq of nodes.eqFilters) {
+      prev.connect(eq);
+      prev = eq;
+    }
+    prev.connect(nodes.limiter);
+  }
+
+  private createChannelChain(ch: ChannelStrip): ChannelAudioNodes {
+    const ctx = this.ctx!;
+    const inputSumGain = ctx.createGain();
     inputSumGain.gain.value = 1.0;
 
-    const preAnalyser = this.ctx.createAnalyser();
+    const preAnalyser = ctx.createAnalyser();
     preAnalyser.fftSize = 1024;
     preAnalyser.smoothingTimeConstant = 0.65;
 
-    const trimGain = this.ctx.createGain();
+    const trimGain = ctx.createGain();
     trimGain.gain.value = dbToGain(ch.softwareTrimDb);
 
-    const autoGain = this.ctx.createGain();
+    const autoGain = ctx.createGain();
     autoGain.gain.value = 1.0;
 
-    const hpf = this.ctx.createBiquadFilter();
+    const polarityGain = ctx.createGain();
+    polarityGain.gain.value = ch.polarityInvert ? -1 : 1;
+
+    const delayNode = ctx.createDelay(0.25);
+    delayNode.delayTime.value = Math.max(0, Math.min(0.2, ch.delayMs / 1000));
+
+    const hpf = ctx.createBiquadFilter();
     hpf.type = 'highpass';
     hpf.frequency.value = ch.hpfEnabled ? ch.hpfFreqHz : 12;
 
     const eqFilters = ch.eqBands.map((band) => {
-      const f = this.ctx!.createBiquadFilter();
-      f.type =
-        band.shape === 'low-shelf'
-          ? 'lowshelf'
-          : band.shape === 'high-shelf'
-            ? 'highshelf'
-            : band.shape === 'notch'
-              ? 'notch'
-              : band.shape === 'band-pass'
-                ? 'bandpass'
-                : 'peaking';
-      f.frequency.value = band.freqHz;
+      const f = ctx.createBiquadFilter();
+      f.type = eqShapeToBiquadType(band.shape);
+      f.frequency.value = Math.max(20, Math.min(20000, band.freqHz));
       f.gain.value = ch.eqEnabled && band.enabled ? band.gainDb : 0;
-      f.Q.value = band.q;
+      f.Q.value = Math.max(0.2, Math.min(20, band.q));
       return f;
     });
 
     const geqFilters = ISO_31_CENTERS.map((freq, idx) => {
-      const f = this.ctx!.createBiquadFilter();
+      const f = ctx.createBiquadFilter();
       f.type = 'peaking';
       f.frequency.value = Math.min(20000, freq);
       f.Q.value = 4.31;
@@ -421,23 +604,25 @@ class RealTimeConsoleAudioEngine {
       return f;
     });
 
-    const comp = this.ctx.createDynamicsCompressor();
+    const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = ch.dynamics.compEnabled ? ch.dynamics.compThresholdDb : 0;
     comp.ratio.value = ch.dynamics.compEnabled ? ch.dynamics.compRatio : 1;
 
-    const faderGain = this.ctx.createGain();
+    const faderGain = ctx.createGain();
     faderGain.gain.value = ch.mute ? 0 : dbToGain(ch.faderDb);
 
-    const panner = this.ctx.createStereoPanner();
+    const panner = ctx.createStereoPanner();
     panner.pan.value = ch.pan / 100;
 
-    const postAnalyser = this.ctx.createAnalyser();
+    const postAnalyser = ctx.createAnalyser();
     postAnalyser.fftSize = 256;
 
     inputSumGain.connect(preAnalyser);
     preAnalyser.connect(trimGain);
     trimGain.connect(autoGain);
-    autoGain.connect(hpf);
+    autoGain.connect(polarityGain);
+    polarityGain.connect(delayNode);
+    delayNode.connect(hpf);
 
     let prev: AudioNode = hpf;
     for (const eq of eqFilters) {
@@ -452,24 +637,306 @@ class RealTimeConsoleAudioEngine {
     comp.connect(faderGain);
     faderGain.connect(panner);
     panner.connect(postAnalyser);
-    postAnalyser.connect(this.masterGain);
 
-    this.channelNodes.set(ch.id, {
+    const nodes: ChannelAudioNodes = {
       inputSumGain,
       preAnalyser,
       trimGain,
       autoGain,
+      polarityGain,
+      delayNode,
       hpf,
       eqFilters,
+      eqFilterCount: eqFilters.length,
       geqFilters,
       comp,
       faderGain,
       panner,
       postAnalyser,
+      sendGains: new Map(),
       preTimeDomain: new Float32Array(new ArrayBuffer(preAnalyser.fftSize * 4)),
       preFreqData: new Float32Array(new ArrayBuffer(preAnalyser.frequencyBinCount * 4)),
       postTimeDomain: new Float32Array(new ArrayBuffer(postAnalyser.fftSize * 4)),
+    };
+    this.channelNodes.set(ch.id, nodes);
+    return nodes;
+  }
+
+  private rebuildChannelEq(ch: ChannelStrip, nodes: ChannelAudioNodes): void {
+    if (!this.ctx) return;
+    try {
+      nodes.hpf.disconnect();
+      nodes.eqFilters.forEach((f) => f.disconnect());
+    } catch {
+      // safe disconnect
+    }
+    nodes.eqFilters = ch.eqBands.map((band) => {
+      const f = this.ctx!.createBiquadFilter();
+      f.type = eqShapeToBiquadType(band.shape);
+      f.frequency.value = Math.max(20, Math.min(20000, band.freqHz));
+      f.gain.value = ch.eqEnabled && band.enabled ? band.gainDb : 0;
+      f.Q.value = Math.max(0.2, Math.min(20, band.q));
+      return f;
     });
+    nodes.eqFilterCount = nodes.eqFilters.length;
+    let prev: AudioNode = nodes.hpf;
+    for (const eq of nodes.eqFilters) {
+      prev.connect(eq);
+      prev = eq;
+    }
+    if (nodes.geqFilters.length > 0) {
+      prev.connect(nodes.geqFilters[0]);
+    } else {
+      prev.connect(nodes.comp);
+    }
+  }
+
+  private createSpeakerChain(spk: SpeakerBand): SpeakerAudioNodes {
+    const ctx = this.ctx!;
+    const inputGain = ctx.createGain();
+    inputGain.gain.value = 1.0;
+
+    const hpfStagesCount = spk.hpfSlope === 48 ? 4 : spk.hpfSlope === 24 ? 2 : 1;
+    const lpfStagesCount = spk.lpfSlope === 48 ? 4 : spk.lpfSlope === 24 ? 2 : 1;
+
+    const hpfFilters = Array.from({ length: hpfStagesCount }, () => {
+      const f = ctx.createBiquadFilter();
+      f.type = 'highpass';
+      f.frequency.value = spk.crossoverBypass ? 12 : Math.max(16, spk.hpfHz);
+      f.Q.value = spk.family === 'Linkwitz-Riley' ? 0.707 : spk.family === 'Bessel' ? 0.577 : 0.707;
+      return f;
+    });
+
+    const lpfFilters = Array.from({ length: lpfStagesCount }, () => {
+      const f = ctx.createBiquadFilter();
+      f.type = 'lowpass';
+      f.frequency.value = spk.crossoverBypass ? 20000 : Math.min(20000, Math.max(40, spk.lpfHz));
+      f.Q.value = spk.family === 'Linkwitz-Riley' ? 0.707 : spk.family === 'Bessel' ? 0.577 : 0.707;
+      return f;
+    });
+
+    const eqBands = spk.eqBands ?? [];
+    const eqFilters = eqBands.map((band) => {
+      const f = ctx.createBiquadFilter();
+      f.type = eqShapeToBiquadType(band.shape);
+      f.frequency.value = Math.max(20, Math.min(20000, band.freqHz));
+      f.gain.value = spk.eqEnabled !== false && band.enabled ? band.gainDb : 0;
+      f.Q.value = Math.max(0.2, Math.min(20, band.q));
+      return f;
+    });
+
+    const subBoost = ctx.createBiquadFilter();
+    subBoost.type = 'peaking';
+    subBoost.frequency.value = spk.subBoostFreqHz ?? 44;
+    subBoost.Q.value = 0.9;
+    subBoost.gain.value = spk.subBoostEnabled ? (spk.subBoostGainDb ?? 0) : 0;
+
+    const polarityGain = ctx.createGain();
+    polarityGain.gain.value = spk.polarityInvert ? -1 : 1;
+
+    const delayNode = ctx.createDelay(0.25);
+    delayNode.delayTime.value = Math.max(0, Math.min(0.2, spk.delayMs / 1000));
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = spk.mute ? 0 : dbToGain(spk.gainDb);
+
+    const panner = ctx.createStereoPanner();
+    const lowerName = spk.name.toLowerCase();
+    panner.pan.value = lowerName.includes('left') ? -0.6 : lowerName.includes('right') ? 0.6 : 0;
+
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = spk.limiterThresholdDb;
+    limiter.ratio.value = 12;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.08;
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.7;
+
+    let prev: AudioNode = inputGain;
+    for (const f of hpfFilters) {
+      prev.connect(f);
+      prev = f;
+    }
+    for (const f of lpfFilters) {
+      prev.connect(f);
+      prev = f;
+    }
+    for (const f of eqFilters) {
+      prev.connect(f);
+      prev = f;
+    }
+    prev.connect(subBoost);
+    subBoost.connect(polarityGain);
+    polarityGain.connect(delayNode);
+    delayNode.connect(gainNode);
+    gainNode.connect(panner);
+    panner.connect(limiter);
+    limiter.connect(analyser);
+
+    const nodes: SpeakerAudioNodes = {
+      inputGain,
+      sourceBusId: spk.sourceBusId,
+      hpfFilters,
+      hpfStagesCount,
+      lpfFilters,
+      lpfStagesCount,
+      eqFilters,
+      eqFilterCount: eqFilters.length,
+      subBoost,
+      polarityGain,
+      delayNode,
+      gainNode,
+      panner,
+      limiter,
+      analyser,
+      sinkKind: spk.outputSinkKind ?? 'master-mix',
+      sinkTargetId: spk.outputDeviceId ?? spk.virtualCableId ?? '',
+      timeDomain: new Float32Array(new ArrayBuffer(analyser.fftSize * 4)),
+    };
+
+    const srcBus = this.busNodes.get(spk.sourceBusId);
+    if (srcBus) {
+      srcBus.analyser.connect(inputGain);
+    }
+
+    this.connectSpeakerOutputSink(spk, nodes);
+    this.speakerNodes.set(spk.id, nodes);
+    return nodes;
+  }
+
+  private connectSpeakerOutputSink(spk: SpeakerBand, nodes: SpeakerAudioNodes): void {
+    if (!this.ctx) return;
+    try {
+      nodes.analyser.disconnect();
+    } catch {
+      // safe disconnect
+    }
+    if (nodes.sinkAudioEl) {
+      nodes.sinkAudioEl.pause();
+      nodes.sinkAudioEl.srcObject = null;
+      nodes.sinkAudioEl = undefined;
+    }
+    nodes.sinkStreamDest = undefined;
+
+    const sinkKind = spk.outputSinkKind ?? 'master-mix';
+    nodes.sinkKind = sinkKind;
+    nodes.sinkTargetId = spk.outputDeviceId ?? spk.virtualCableId ?? '';
+
+    if (sinkKind === 'virtual-cable' && spk.virtualCableId) {
+      const vc = this.virtualCableNodes.get(spk.virtualCableId);
+      if (vc) {
+        nodes.analyser.connect(vc.inputSum);
+        return;
+      }
+    }
+
+    if (sinkKind === 'device-sink' && spk.outputDeviceId && typeof Audio !== 'undefined') {
+      const streamDest = this.ctx.createMediaStreamDestination();
+      nodes.analyser.connect(streamDest);
+      const audioEl = new Audio();
+      audioEl.srcObject = streamDest.stream;
+      const sinkCapable = audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
+      if (typeof sinkCapable.setSinkId === 'function') {
+        void sinkCapable.setSinkId(spk.outputDeviceId === 'default' ? '' : spk.outputDeviceId).catch(() => {});
+      }
+      void audioEl.play().catch(() => {});
+      nodes.sinkStreamDest = streamDest;
+      nodes.sinkAudioEl = audioEl;
+      return;
+    }
+
+    if (this.masterMonitorSum) {
+      nodes.analyser.connect(this.masterMonitorSum);
+    }
+  }
+
+  private rebuildSpeakerChain(spk: SpeakerBand): void {
+    const existing = this.speakerNodes.get(spk.id);
+    if (existing) {
+      try {
+        existing.inputGain.disconnect();
+        existing.hpfFilters.forEach((f) => f.disconnect());
+        existing.lpfFilters.forEach((f) => f.disconnect());
+        existing.eqFilters.forEach((f) => f.disconnect());
+        existing.analyser.disconnect();
+      } catch {
+        // safe disconnect
+      }
+      if (existing.sinkAudioEl) {
+        existing.sinkAudioEl.pause();
+        existing.sinkAudioEl.srcObject = null;
+      }
+      this.speakerNodes.delete(spk.id);
+    }
+    this.createSpeakerChain(spk);
+  }
+
+  private ensureVirtualCableChain(vc: VirtualCableNode): VirtualCableAudioNodes {
+    const existing = this.virtualCableNodes.get(vc.id);
+    if (existing) return existing;
+    const ctx = this.ctx!;
+    const inputSum = ctx.createGain();
+    inputSum.gain.value = 1.0;
+
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = vc.active ? dbToGain(vc.gainDb) : 0;
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.7;
+
+    const streamDest = ctx.createMediaStreamDestination();
+
+    const monitorGain = ctx.createGain();
+    monitorGain.gain.value = vc.monitorToMaster && vc.active ? 1.0 : 0.0;
+
+    inputSum.connect(gainNode);
+    gainNode.connect(analyser);
+    analyser.connect(streamDest);
+    analyser.connect(monitorGain);
+    if (this.masterMonitorSum) {
+      monitorGain.connect(this.masterMonitorSum);
+    }
+
+    const nodes: VirtualCableAudioNodes = {
+      inputSum,
+      gainNode,
+      analyser,
+      streamDest,
+      monitorGain,
+      timeDomain: new Float32Array(new ArrayBuffer(analyser.fftSize * 4)),
+    };
+    this.virtualCableNodes.set(vc.id, nodes);
+    return nodes;
+  }
+
+  public wouldVirtualCableCreateCycle(
+    cableId: string,
+    candidateChannelId: string,
+    channels: ChannelStrip[],
+    virtualCables: VirtualCableNode[]
+  ): boolean {
+    const cable = virtualCables.find((v) => v.id === cableId);
+    if (!cable) return false;
+    if (cable.sourceKind === 'channel' && cable.sourceId === candidateChannelId) {
+      return true;
+    }
+    // Also guard if candidateChannel feeds a bus that feeds this cable, and this cable feeds candidateChannel
+    if (cable.sourceKind === 'bus' && cable.sourceId) {
+      const ch = channels.find((c) => c.id === candidateChannelId);
+      if (!ch) return false;
+      const busId = cable.sourceId;
+      if (busId === 'bus-main' && ch.assignMain) return true;
+      if (busId === 'bus-sub' && ch.assignSub) return true;
+      if (busId === 'bus-stream' && (ch.assignBroadcast || ch.sends.livestream.enabled)) return true;
+      if (busId === 'bus-mon1' && ch.sends.mon1.enabled) return true;
+      if (busId === 'bus-mon2' && ch.sends.mon2.enabled) return true;
+      if (busId === 'bus-iem' && ch.sends.iemChoir.enabled) return true;
+      if (busId === 'bus-fx' && ch.sends.fxReverb.enabled) return true;
+    }
+    return false;
   }
 
   public detachChannelSource(channelId: string): void {
@@ -483,6 +950,13 @@ class RealTimeConsoleAudioEngine {
       src.toneNoise?.disconnect();
       src.toneGain?.disconnect();
       src.sourceNode?.disconnect();
+      if (src.virtualCableId) {
+        const vcNodes = this.virtualCableNodes.get(src.virtualCableId);
+        const chNodes = this.channelNodes.get(channelId);
+        if (vcNodes && chNodes) {
+          vcNodes.analyser.disconnect(chNodes.inputSumGain);
+        }
+      }
     } catch {
       // Safe cleanup even if node already disconnected
     }
@@ -528,11 +1002,13 @@ class RealTimeConsoleAudioEngine {
   public async attachMicToChannel(
     channelId: string,
     channels: ChannelStrip[],
-    mainBus: BusNode,
+    buses: BusNode[],
     deviceId?: string,
-    fallbackLabel?: string
+    fallbackLabel?: string,
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[]
   ): Promise<AudioSourceBinding> {
-    await this.unlockAndStart(channels, mainBus);
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
     if (!this.ctx) throw new Error('AudioContext failed to initialize');
     const nodes = this.channelNodes.get(channelId);
     if (!nodes) throw new Error(`Channel chain missing for ${channelId}`);
@@ -572,14 +1048,16 @@ class RealTimeConsoleAudioEngine {
   public async attachDesktopAudioToChannel(
     channelId: string,
     channels: ChannelStrip[],
-    mainBus: BusNode,
-    onEnded?: () => void
+    buses: BusNode[],
+    onEnded?: () => void,
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[]
   ): Promise<AudioSourceBinding> {
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      throw new Error('Desktop/System audio capture (getDisplayMedia) is not supported in this browser.');
+      throw new Error('Browser tab / system audio capture (getDisplayMedia) is not supported in this browser.');
     }
 
-    await this.unlockAndStart(channels, mainBus);
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
     if (!this.ctx) throw new Error('AudioContext failed to initialize');
     const nodes = this.channelNodes.get(channelId);
     if (!nodes) throw new Error(`Channel chain missing for ${channelId}`);
@@ -597,11 +1075,10 @@ class RealTimeConsoleAudioEngine {
     if (audioTracks.length === 0) {
       stream.getTracks().forEach((t) => t.stop());
       throw new Error(
-        'No system/desktop audio track was shared. Re-try and enable "Share system audio" or "Share tab audio".'
+        'No audio track was shared. Re-try and enable "Share tab audio" or "Share system audio".'
       );
     }
 
-    // Stop unnecessary video capture track cleanly if audio remains live
     stream.getVideoTracks().forEach((vt) => vt.stop());
 
     this.detachChannelSource(channelId);
@@ -625,7 +1102,7 @@ class RealTimeConsoleAudioEngine {
 
     return {
       kind: 'desktop',
-      label: primaryAudioTrack.label || 'Desktop / System Audio',
+      label: primaryAudioTrack.label || 'Browser Tab / System Audio',
       active: true,
       sampleRateHz: settings.sampleRate ?? this.ctx.sampleRate,
       channelCount: settings.channelCount ?? 2,
@@ -636,9 +1113,11 @@ class RealTimeConsoleAudioEngine {
     channelId: string,
     file: File,
     channels: ChannelStrip[],
-    mainBus: BusNode
+    buses: BusNode[],
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[]
   ): Promise<AudioSourceBinding> {
-    await this.unlockAndStart(channels, mainBus);
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
     if (!this.ctx) throw new Error('AudioContext failed to initialize');
     const nodes = this.channelNodes.get(channelId);
     if (!nodes) throw new Error(`Channel chain missing for ${channelId}`);
@@ -676,9 +1155,11 @@ class RealTimeConsoleAudioEngine {
     kind: 'pink' | 'sine1k' | 'sweep',
     gainDb: number,
     channels: ChannelStrip[],
-    mainBus: BusNode
+    buses: BusNode[],
+    speakers?: SpeakerBand[],
+    virtualCables?: VirtualCableNode[]
   ): Promise<AudioSourceBinding> {
-    await this.unlockAndStart(channels, mainBus);
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
     if (!this.ctx) throw new Error('AudioContext failed to initialize');
     const nodes = this.channelNodes.get(channelId);
     if (!nodes) throw new Error(`Channel chain missing for ${channelId}`);
@@ -740,8 +1221,160 @@ class RealTimeConsoleAudioEngine {
     };
   }
 
+  public async attachVirtualCableToChannel(
+    channelId: string,
+    virtualCableId: string,
+    channels: ChannelStrip[],
+    buses: BusNode[],
+    speakers: SpeakerBand[],
+    virtualCables: VirtualCableNode[]
+  ): Promise<AudioSourceBinding> {
+    if (this.wouldVirtualCableCreateCycle(virtualCableId, channelId, channels, virtualCables)) {
+      throw new Error(
+        `Loop Guard blocked patch: ${virtualCableId.toUpperCase()} receives audio from ${channelId.toUpperCase()} (would cause infinite audio feedback). Unassign the channel send from that bus first.`
+      );
+    }
+
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
+    if (!this.ctx) throw new Error('AudioContext failed to initialize');
+    const chNodes = this.channelNodes.get(channelId);
+    const vcNodes = this.virtualCableNodes.get(virtualCableId);
+    const vcMeta = virtualCables.find((v) => v.id === virtualCableId);
+    if (!chNodes || !vcNodes || !vcMeta) {
+      throw new Error(`Virtual Audio Cable "${virtualCableId}" is unavailable.`);
+    }
+
+    this.detachChannelSource(channelId);
+    vcNodes.analyser.connect(chNodes.inputSumGain);
+
+    this.channelSources.set(channelId, {
+      kind: 'virtual-cable',
+      virtualCableId,
+    });
+
+    return {
+      kind: 'virtual-cable',
+      virtualCableId,
+      label: `${vcMeta.name} (${vcMeta.sourceLabel})`,
+      active: true,
+      sampleRateHz: this.ctx.sampleRate,
+      channelCount: 2,
+    };
+  }
+
+  public async attachExternalTabToVirtualCable(
+    cableId: string,
+    channels: ChannelStrip[],
+    buses: BusNode[],
+    speakers: SpeakerBand[],
+    virtualCables: VirtualCableNode[],
+    onEnded?: () => void
+  ): Promise<string> {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error('Browser tab/system audio capture is unsupported in this browser.');
+    }
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
+    if (!this.ctx) throw new Error('AudioContext failed to initialize');
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      } as MediaTrackConstraints,
+      video: true,
+    });
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error('No audio track shared. Enable "Share tab audio" or "Share system audio".');
+    }
+    stream.getVideoTracks().forEach((vt) => vt.stop());
+
+    const vcNodes = this.virtualCableNodes.get(cableId);
+    if (!vcNodes) throw new Error('Virtual Cable node missing');
+
+    if (vcNodes.externalSource) {
+      try {
+        vcNodes.externalSource.sourceNode?.disconnect();
+        vcNodes.externalSource.stream?.getTracks().forEach((t) => t.stop());
+      } catch {
+        // safe cleanup
+      }
+    }
+
+    const track = audioTracks[0];
+    const audioStream = new MediaStream([track]);
+    const sourceNode = this.ctx.createMediaStreamSource(audioStream);
+    sourceNode.connect(vcNodes.inputSum);
+
+    track.onended = () => {
+      try {
+        sourceNode.disconnect();
+      } catch {
+        // safe
+      }
+      vcNodes.externalSource = undefined;
+      onEnded?.();
+    };
+
+    vcNodes.externalSource = {
+      kind: 'desktop',
+      stream: audioStream,
+      sourceNode,
+    };
+
+    return track.label || 'Browser Tab / Media Stream';
+  }
+
+  public async attachFileToVirtualCable(
+    cableId: string,
+    file: File,
+    channels: ChannelStrip[],
+    buses: BusNode[],
+    speakers: SpeakerBand[],
+    virtualCables: VirtualCableNode[]
+  ): Promise<string> {
+    await this.unlockAndStart(channels, buses, speakers, virtualCables);
+    if (!this.ctx) throw new Error('AudioContext failed to initialize');
+    const vcNodes = this.virtualCableNodes.get(cableId);
+    if (!vcNodes) throw new Error('Virtual Cable node missing');
+
+    if (vcNodes.externalSource) {
+      try {
+        vcNodes.externalSource.sourceNode?.disconnect();
+        vcNodes.externalSource.audioElement?.pause();
+        if (vcNodes.externalSource.objectUrl) URL.revokeObjectURL(vcNodes.externalSource.objectUrl);
+      } catch {
+        // safe
+      }
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    const audioEl = new Audio();
+    audioEl.src = objectUrl;
+    audioEl.loop = true;
+    audioEl.crossOrigin = 'anonymous';
+    const sourceNode = this.ctx.createMediaElementSource(audioEl);
+    sourceNode.connect(vcNodes.inputSum);
+    await audioEl.play();
+
+    vcNodes.externalSource = {
+      kind: 'file',
+      sourceNode,
+      audioElement: audioEl,
+      objectUrl,
+    };
+
+    return file.name;
+  }
+
   public setTestTone(active: boolean, kind: 'pink' | 'sine1k' | 'sweep', gainDb: number): void {
-    if (!this.ctx || !this.masterGain) return;
+    if (!this.ctx) return;
+    const mainBus = this.busNodes.get('bus-main');
+    const targetNode = mainBus?.sumGain ?? this.masterMonitorSum;
+    if (!targetNode) return;
 
     try {
       this.testOsc?.stop();
@@ -760,7 +1393,7 @@ class RealTimeConsoleAudioEngine {
 
     this.testGain = this.ctx.createGain();
     this.testGain.gain.setTargetAtTime(dbToGain(gainDb) * 0.35, this.ctx.currentTime, 0.02);
-    this.testGain.connect(this.masterGain);
+    this.testGain.connect(targetNode);
 
     if (kind === 'pink') {
       const bufferSize = this.ctx.sampleRate * 2;
@@ -795,35 +1428,206 @@ class RealTimeConsoleAudioEngine {
     }
   }
 
-  public syncChannels(
+  public startBusRecording(busId = 'bus-stream'): { ok: boolean; mimeType?: string; error?: string } {
+    if (!this.ctx || this.ctx.state !== 'running') {
+      return { ok: false, error: 'Engage Audio DSP Engine before recording.' };
+    }
+    const bus = this.busNodes.get(busId) ?? this.busNodes.get('bus-main');
+    if (!bus) return { ok: false, error: 'Target broadcast bus unavailable.' };
+    if (typeof MediaRecorder === 'undefined') {
+      return { ok: false, error: 'MediaRecorder API is not supported in this browser.' };
+    }
+    if (this.activeRecorder) {
+      return { ok: false, error: 'Recording already in progress.' };
+    }
+
+    const preferredTypes = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+    const mimeType = preferredTypes.find((t) => MediaRecorder.isTypeSupported(t)) ?? '';
+    const recorder = mimeType
+      ? new MediaRecorder(bus.streamDest.stream, { mimeType })
+      : new MediaRecorder(bus.streamDest.stream);
+
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.start(500);
+    this.activeRecorder = {
+      recorder,
+      chunks,
+      targetId: busId,
+      startedAt: Date.now(),
+    };
+    return { ok: true, mimeType: recorder.mimeType || 'audio/webm' };
+  }
+
+  public async stopBusRecording(): Promise<{ blobUrl: string; filename: string; durationSec: number } | null> {
+    const rec = this.activeRecorder;
+    if (!rec) return null;
+    this.activeRecorder = null;
+
+    await new Promise<void>((resolve) => {
+      rec.recorder.onstop = () => resolve();
+      if (rec.recorder.state !== 'inactive') {
+        rec.recorder.stop();
+      } else {
+        resolve();
+      }
+    });
+
+    const blob = new Blob(rec.chunks, { type: rec.recorder.mimeType || 'audio/webm' });
+    const blobUrl = URL.createObjectURL(blob);
+    const ext = rec.recorder.mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    return {
+      blobUrl,
+      filename: `console-${rec.targetId}-${stamp}.${ext}`,
+      durationSec: Math.max(1, Math.round((Date.now() - rec.startedAt) / 1000)),
+    };
+  }
+
+  public syncGraph(
     channels: ChannelStrip[],
-    mainBus?: BusNode,
+    buses: BusNode[],
     virtualDi?: VirtualDiState,
-    speakers?: SpeakerBand[]
+    speakers: SpeakerBand[] = [],
+    virtualCables: VirtualCableNode[] = []
   ): void {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    const anySolo = channels.some((c) => c.solo);
 
-    if (mainBus && this.masterGain && this.masterLimiter) {
-      const mainGain = mainBus.mute ? 0 : dbToGain(mainBus.faderDb);
-      this.masterGain.gain.setTargetAtTime(mainGain, now, 0.015);
-      this.masterLimiter.threshold.setTargetAtTime(mainBus.limiterCeilingDb, now, 0.02);
+    // 1. Reconcile Buses dynamically
+    const activeBusIds = new Set(buses.map((b) => b.id));
+    for (const [id, bNodes] of this.busNodes.entries()) {
+      if (!activeBusIds.has(id)) {
+        try {
+          bNodes.sumGain.disconnect();
+          bNodes.analyser.disconnect();
+        } catch {
+          // safe
+        }
+        this.busNodes.delete(id);
+      }
+    }
+    for (const bus of buses) {
+      let bNodes = this.busNodes.get(bus.id);
+      if (!bNodes) {
+        bNodes = this.createBusChain(bus);
+      }
+      if ((bus.eqBands?.length ?? 0) !== bNodes.eqFilterCount) {
+        this.rebuildBusEq(bus, bNodes);
+      }
+      (bus.eqBands ?? []).forEach((band, idx) => {
+        const f = bNodes!.eqFilters[idx];
+        if (!f) return;
+        f.type = eqShapeToBiquadType(band.shape);
+        f.frequency.setTargetAtTime(Math.max(20, Math.min(20000, band.freqHz)), now, 0.02);
+        f.Q.setTargetAtTime(Math.max(0.2, Math.min(20, band.q)), now, 0.02);
+        f.gain.setTargetAtTime(bus.eqEnabled && band.enabled ? band.gainDb : 0, now, 0.02);
+      });
+      bNodes.limiter.threshold.setTargetAtTime(bus.limiterCeilingDb, now, 0.02);
+      bNodes.faderGain.gain.setTargetAtTime(bus.mute ? 0 : dbToGain(bus.faderDb), now, 0.015);
     }
 
-    if (speakers && this.subBoostFilter) {
-      const subBand = speakers.find((s) => s.role === 'Subwoofer');
-      if (subBand && subBand.subBoostEnabled && !subBand.mute) {
-        this.subBoostFilter.frequency.setTargetAtTime(subBand.subBoostFreqHz ?? 44, now, 0.02);
-        this.subBoostFilter.gain.setTargetAtTime(subBand.subBoostGainDb ?? 0, now, 0.02);
-      } else {
-        this.subBoostFilter.gain.setTargetAtTime(0, now, 0.02);
+    // 2. Reconcile Virtual Audio Cables dynamically
+    const activeVcIds = new Set(virtualCables.map((v) => v.id));
+    for (const [id, vcNodes] of this.virtualCableNodes.entries()) {
+      if (!activeVcIds.has(id)) {
+        try {
+          vcNodes.attachedBusTap?.tapGain.disconnect();
+          vcNodes.attachedChannelTap?.tapGain.disconnect();
+          vcNodes.analyser.disconnect();
+        } catch {
+          // safe
+        }
+        this.virtualCableNodes.delete(id);
+      }
+    }
+    for (const vc of virtualCables) {
+      const vcNodes = this.ensureVirtualCableChain(vc);
+      vcNodes.gainNode.gain.setTargetAtTime(vc.active ? dbToGain(vc.gainDb) : 0, now, 0.015);
+      vcNodes.monitorGain.gain.setTargetAtTime(vc.monitorToMaster && vc.active ? 1.0 : 0.0, now, 0.015);
+
+      // Update bus tap
+      if (vc.sourceKind === 'bus' && vc.sourceId) {
+        if (vcNodes.attachedBusTap?.busId !== vc.sourceId) {
+          try {
+            vcNodes.attachedBusTap?.tapGain.disconnect();
+          } catch {
+            // safe
+          }
+          vcNodes.attachedBusTap = undefined;
+          const bNodes = this.busNodes.get(vc.sourceId);
+          if (bNodes) {
+            const tapGain = this.ctx.createGain();
+            tapGain.gain.value = 1.0;
+            bNodes.analyser.connect(tapGain);
+            tapGain.connect(vcNodes.inputSum);
+            vcNodes.attachedBusTap = { busId: vc.sourceId, tapGain };
+          }
+        }
+      } else if (vcNodes.attachedBusTap) {
+        try {
+          vcNodes.attachedBusTap.tapGain.disconnect();
+        } catch {
+          // safe
+        }
+        vcNodes.attachedBusTap = undefined;
+      }
+
+      // Update channel tap
+      if (vc.sourceKind === 'channel' && vc.sourceId) {
+        if (vcNodes.attachedChannelTap?.channelId !== vc.sourceId) {
+          try {
+            vcNodes.attachedChannelTap?.tapGain.disconnect();
+          } catch {
+            // safe
+          }
+          vcNodes.attachedChannelTap = undefined;
+          const cNodes = this.channelNodes.get(vc.sourceId);
+          if (cNodes) {
+            const tapGain = this.ctx.createGain();
+            tapGain.gain.value = 1.0;
+            cNodes.postAnalyser.connect(tapGain);
+            tapGain.connect(vcNodes.inputSum);
+            vcNodes.attachedChannelTap = { channelId: vc.sourceId, tapGain };
+          }
+        }
+      } else if (vcNodes.attachedChannelTap) {
+        try {
+          vcNodes.attachedChannelTap.tapGain.disconnect();
+        } catch {
+          // safe
+        }
+        vcNodes.attachedChannelTap = undefined;
       }
     }
 
+    // 3. Reconcile Channels dynamically (add/remove/PEQ resize + Bus Sends)
+    const activeChannelIds = new Set(channels.map((c) => c.id));
+    for (const [id, cNodes] of this.channelNodes.entries()) {
+      if (!activeChannelIds.has(id)) {
+        this.detachChannelSource(id);
+        try {
+          cNodes.sendGains.forEach((s) => s.gain.disconnect());
+          cNodes.postAnalyser.disconnect();
+        } catch {
+          // safe
+        }
+        this.channelNodes.delete(id);
+      }
+    }
+
+    const anySolo = channels.some((c) => c.solo);
+
     for (const ch of channels) {
-      const nodes = this.channelNodes.get(ch.id);
-      if (!nodes) continue;
+      let nodes = this.channelNodes.get(ch.id);
+      if (!nodes) {
+        nodes = this.createChannelChain(ch);
+      }
+      if (ch.eqBands.length !== nodes.eqFilterCount) {
+        this.rebuildChannelEq(ch, nodes);
+      }
 
       const effectiveMute = ch.mute || (anySolo && !ch.solo);
       const polarity = ch.polarityInvert ? -1 : 1;
@@ -833,22 +1637,21 @@ class RealTimeConsoleAudioEngine {
           : 1;
 
       nodes.trimGain.gain.setTargetAtTime(dbToGain(ch.softwareTrimDb), now, 0.015);
-      const targetGain = effectiveMute ? 0 : dbToGain(ch.faderDb) * polarity * vdiBoost;
-
-      nodes.faderGain.gain.setTargetAtTime(targetGain, now, 0.015);
-      nodes.panner.pan.setTargetAtTime(ch.pan / 100, now, 0.015);
+      nodes.polarityGain.gain.setTargetAtTime(polarity, now, 0.01);
+      nodes.delayNode.delayTime.setTargetAtTime(Math.max(0, Math.min(0.2, ch.delayMs / 1000)), now, 0.015);
       nodes.hpf.frequency.setTargetAtTime(ch.hpfEnabled ? ch.hpfFreqHz : 12, now, 0.02);
 
       ch.eqBands.forEach((band, idx) => {
-        const filter = nodes.eqFilters[idx];
+        const filter = nodes!.eqFilters[idx];
         if (!filter) return;
-        filter.frequency.setTargetAtTime(band.freqHz, now, 0.02);
-        filter.Q.setTargetAtTime(band.q, now, 0.02);
+        filter.type = eqShapeToBiquadType(band.shape);
+        filter.frequency.setTargetAtTime(Math.max(20, Math.min(20000, band.freqHz)), now, 0.02);
+        filter.Q.setTargetAtTime(Math.max(0.2, Math.min(20, band.q)), now, 0.02);
         filter.gain.setTargetAtTime(ch.eqEnabled && band.enabled ? band.gainDb : 0, now, 0.02);
       });
 
       ch.geqBands.forEach((gainDb, idx) => {
-        const gf = nodes.geqFilters[idx];
+        const gf = nodes!.geqFilters[idx];
         if (!gf) return;
         gf.gain.setTargetAtTime(ch.geqEnabled ? gainDb : 0, now, 0.02);
       });
@@ -860,7 +1663,167 @@ class RealTimeConsoleAudioEngine {
         nodes.comp.threshold.setTargetAtTime(0, now, 0.02);
         nodes.comp.ratio.setTargetAtTime(1, now, 0.02);
       }
+
+      const targetGain = effectiveMute ? 0 : dbToGain(ch.faderDb) * vdiBoost;
+      nodes.faderGain.gain.setTargetAtTime(targetGain, now, 0.015);
+      nodes.panner.pan.setTargetAtTime(ch.pan / 100, now, 0.015);
+
+      // Reconcile channel -> bus sends
+      const sendKeyMap: { busId: string; enabled: boolean; levelDb: number; preFader: boolean }[] = [
+        { busId: 'bus-main', enabled: ch.assignMain && !effectiveMute, levelDb: 0, preFader: false },
+        { busId: 'bus-sub', enabled: ch.assignSub && !effectiveMute, levelDb: 0, preFader: false },
+        {
+          busId: 'bus-mon1',
+          enabled: ch.sends.mon1.enabled && !ch.mute,
+          levelDb: ch.sends.mon1.levelDb,
+          preFader: ch.sends.mon1.preFader,
+        },
+        {
+          busId: 'bus-mon2',
+          enabled: ch.sends.mon2.enabled && !ch.mute,
+          levelDb: ch.sends.mon2.levelDb,
+          preFader: ch.sends.mon2.preFader,
+        },
+        {
+          busId: 'bus-iem',
+          enabled: ch.sends.iemChoir.enabled && !ch.mute,
+          levelDb: ch.sends.iemChoir.levelDb,
+          preFader: ch.sends.iemChoir.preFader,
+        },
+        {
+          busId: 'bus-fx',
+          enabled: ch.sends.fxReverb.enabled && !effectiveMute,
+          levelDb: ch.sends.fxReverb.levelDb,
+          preFader: ch.sends.fxReverb.preFader,
+        },
+        {
+          busId: 'bus-stream',
+          enabled: (ch.assignBroadcast || ch.sends.livestream.enabled) && !effectiveMute,
+          levelDb: ch.sends.livestream.levelDb,
+          preFader: ch.sends.livestream.preFader,
+        },
+      ];
+
+      // Include any user-created buses dynamically
+      for (const b of buses) {
+        if (sendKeyMap.some((s) => s.busId === b.id)) continue;
+        const customSend = ch.sends[b.id];
+        sendKeyMap.push({
+          busId: b.id,
+          enabled: customSend ? customSend.enabled && !effectiveMute : false,
+          levelDb: customSend?.levelDb ?? -12,
+          preFader: customSend?.preFader ?? false,
+        });
+      }
+
+      for (const spec of sendKeyMap) {
+        const bNodes = this.busNodes.get(spec.busId);
+        if (!bNodes) continue;
+        let existingSend = nodes.sendGains.get(spec.busId);
+        if (!existingSend || existingSend.preFader !== spec.preFader) {
+          if (existingSend) {
+            try {
+              existingSend.gain.disconnect();
+            } catch {
+              // safe
+            }
+          }
+          const sendGain = this.ctx.createGain();
+          sendGain.gain.value = spec.enabled ? dbToGain(spec.levelDb) : 0;
+          const tapPoint: AudioNode = spec.preFader ? nodes.comp : nodes.postAnalyser;
+          tapPoint.connect(sendGain);
+          sendGain.connect(bNodes.sumGain);
+          existingSend = { gain: sendGain, preFader: spec.preFader };
+          nodes.sendGains.set(spec.busId, existingSend);
+        } else {
+          existingSend.gain.gain.setTargetAtTime(spec.enabled ? dbToGain(spec.levelDb) : 0, now, 0.015);
+        }
+      }
     }
+
+    // 4. Reconcile Speakers / Crossovers / Final Outputs dynamically
+    const activeSpkIds = new Set(speakers.map((s) => s.id));
+    for (const [id, sNodes] of this.speakerNodes.entries()) {
+      if (!activeSpkIds.has(id)) {
+        try {
+          sNodes.inputGain.disconnect();
+          sNodes.analyser.disconnect();
+        } catch {
+          // safe
+        }
+        if (sNodes.sinkAudioEl) {
+          sNodes.sinkAudioEl.pause();
+          sNodes.sinkAudioEl.srcObject = null;
+        }
+        this.speakerNodes.delete(id);
+      }
+    }
+
+    const masterSumSpeakers = speakers.filter((s) => (s.outputSinkKind ?? 'master-mix') === 'master-mix' && !s.mute);
+    const masterGainComp = masterSumSpeakers.length > 1 ? 1 / Math.sqrt(masterSumSpeakers.length) : 1;
+
+    for (const spk of speakers) {
+      let sNodes = this.speakerNodes.get(spk.id);
+      const hpfNeeded = spk.hpfSlope === 48 ? 4 : spk.hpfSlope === 24 ? 2 : 1;
+      const lpfNeeded = spk.lpfSlope === 48 ? 4 : spk.lpfSlope === 24 ? 2 : 1;
+      const eqNeeded = spk.eqBands?.length ?? 0;
+
+      if (
+        !sNodes ||
+        sNodes.sourceBusId !== spk.sourceBusId ||
+        sNodes.hpfStagesCount !== hpfNeeded ||
+        sNodes.lpfStagesCount !== lpfNeeded ||
+        sNodes.eqFilterCount !== eqNeeded
+      ) {
+        this.rebuildSpeakerChain(spk);
+        sNodes = this.speakerNodes.get(spk.id);
+      }
+      if (!sNodes) continue;
+
+      const desiredSinkKind = spk.outputSinkKind ?? 'master-mix';
+      const desiredSinkTarget = spk.outputDeviceId ?? spk.virtualCableId ?? '';
+      if (sNodes.sinkKind !== desiredSinkKind || sNodes.sinkTargetId !== desiredSinkTarget) {
+        this.connectSpeakerOutputSink(spk, sNodes);
+      }
+
+      const qVal = spk.family === 'Linkwitz-Riley' ? 0.707 : spk.family === 'Bessel' ? 0.577 : 0.707;
+      for (const f of sNodes.hpfFilters) {
+        f.frequency.setTargetAtTime(spk.crossoverBypass ? 12 : Math.max(16, spk.hpfHz), now, 0.02);
+        f.Q.setTargetAtTime(qVal, now, 0.02);
+      }
+      for (const f of sNodes.lpfFilters) {
+        f.frequency.setTargetAtTime(spk.crossoverBypass ? 20000 : Math.min(20000, Math.max(40, spk.lpfHz)), now, 0.02);
+        f.Q.setTargetAtTime(qVal, now, 0.02);
+      }
+      (spk.eqBands ?? []).forEach((band, idx) => {
+        const f = sNodes!.eqFilters[idx];
+        if (!f) return;
+        f.type = eqShapeToBiquadType(band.shape);
+        f.frequency.setTargetAtTime(Math.max(20, Math.min(20000, band.freqHz)), now, 0.02);
+        f.Q.setTargetAtTime(Math.max(0.2, Math.min(20, band.q)), now, 0.02);
+        f.gain.setTargetAtTime(spk.eqEnabled !== false && band.enabled ? band.gainDb : 0, now, 0.02);
+      });
+
+      sNodes.subBoost.frequency.setTargetAtTime(spk.subBoostFreqHz ?? 44, now, 0.02);
+      sNodes.subBoost.gain.setTargetAtTime(spk.subBoostEnabled ? (spk.subBoostGainDb ?? 0) : 0, now, 0.02);
+      sNodes.polarityGain.gain.setTargetAtTime(spk.polarityInvert ? -1 : 1, now, 0.01);
+      sNodes.delayNode.delayTime.setTargetAtTime(Math.max(0, Math.min(0.2, spk.delayMs / 1000)), now, 0.015);
+      const normComp = desiredSinkKind === 'master-mix' ? masterGainComp : 1;
+      sNodes.gainNode.gain.setTargetAtTime(spk.mute ? 0 : dbToGain(spk.gainDb) * normComp, now, 0.015);
+      sNodes.limiter.threshold.setTargetAtTime(spk.limiterThresholdDb, now, 0.02);
+    }
+  }
+
+  public syncChannels(
+    channels: ChannelStrip[],
+    mainBus?: BusNode,
+    virtualDi?: VirtualDiState,
+    speakers?: SpeakerBand[],
+    buses?: BusNode[],
+    virtualCables?: VirtualCableNode[]
+  ): void {
+    const resolvedBuses = buses ?? (mainBus ? [mainBus] : []);
+    this.syncGraph(channels, resolvedBuses, virtualDi, speakers ?? [], virtualCables ?? []);
   }
 
   private readAnalyserLevels(analyser: AnalyserNode, buf: Float32Array<ArrayBuffer>): { peakDbfs: number; rmsDbfs: number } {
@@ -880,16 +1843,34 @@ class RealTimeConsoleAudioEngine {
     };
   }
 
-  /**
-   * Reads genuine real-time Web Audio AnalyserNode telemetry at ~25Hz,
-   * executes Dugan constant-gain sharing + auto-leveling + FFT acoustic intelligence,
-   * and detects non-harmonic narrowband feedback spikes.
-   */
+  private pushGrHistory(nodeId: string, grDb: number): number[] {
+    const prev = this.grHistoryMap.get(nodeId) ?? [];
+    const next = [...prev.slice(-39), Number(grDb.toFixed(2))];
+    this.grHistoryMap.set(nodeId, next);
+    return next;
+  }
+
+  private updatePeakHold(nodeId: string, currentPeakDbfs: number): { peakHoldDbfs: number; clipped: boolean } {
+    const prev = this.peakHolds.get(nodeId);
+    const isClip = currentPeakDbfs >= -0.3;
+    if (!prev) {
+      const next = { value: currentPeakDbfs, clipped: isClip };
+      this.peakHolds.set(nodeId, next);
+      return { peakHoldDbfs: next.value, clipped: next.clipped };
+    }
+    const nextVal = currentPeakDbfs > prev.value ? currentPeakDbfs : prev.value;
+    const nextClip = prev.clipped || isClip;
+    this.peakHolds.set(nodeId, { value: nextVal, clipped: nextClip });
+    return { peakHoldDbfs: nextVal, clipped: nextClip };
+  }
+
   public sampleMeters(
     channels: ChannelStrip[],
     buses: BusNode[],
     graphVersion: number,
-    intelligenceConfig: AudioIntelligenceConfig = DEFAULT_INTELLIGENCE_CONFIG
+    intelligenceConfig: AudioIntelligenceConfig = DEFAULT_INTELLIGENCE_CONFIG,
+    speakers: SpeakerBand[] = [],
+    virtualCables: VirtualCableNode[] = []
   ): {
     meters: Record<string, MeterReading>;
     spectrum: number[];
@@ -900,23 +1881,16 @@ class RealTimeConsoleAudioEngine {
     const meters: Record<string, MeterReading> = {};
     const channelInsights: Record<string, ChannelAcousticAnalysis> = {};
     const anySolo = channels.some((c) => c.solo);
-    const nowMs = Date.now();
     const isRunning = this.ctx?.state === 'running';
     const sampleRateHz = this.ctx?.sampleRate ?? 48000;
-
-    let mainSumLinear = 0;
-    let subSumLinear = 0;
-    let mon1SumLinear = 0;
-    let mon2SumLinear = 0;
-    let iemSumLinear = 0;
-    let fxSumLinear = 0;
-    let streamSumLinear = 0;
 
     let hottestActiveChId = channels[0]?.id ?? 'ch-01';
     let hottestChannelRms = -80;
 
-    // Pass 1: Read pre/post RMS levels & update Dugan Automix envelope power
-    const preLevels = new Map<string, { prePeak: number; preRms: number; postPeak: number; postRms: number; gr: number; isMuted: boolean; hasSource: boolean }>();
+    const preLevels = new Map<
+      string,
+      { prePeak: number; preRms: number; postPeak: number; postRms: number; gr: number; isMuted: boolean; hasSource: boolean }
+    >();
     const speechCategories = new Set(['pulpit', 'vocal', 'choir']);
     let duganTotalPower = 0;
     let automixActiveMics = 0;
@@ -955,7 +1929,6 @@ class RealTimeConsoleAudioEngine {
       preLevels.set(ch.id, { prePeak, preRms, postPeak, postRms, gr, isMuted, hasSource });
     }
 
-    // Pass 2: Apply Dugan Automix + Auto-Leveler GainNode automation & compute per-channel FFT insights
     const activeLowBandChannels: ChannelStrip[] = [];
     const activeLowMidChannels: ChannelStrip[] = [];
 
@@ -992,36 +1965,32 @@ class RealTimeConsoleAudioEngine {
         nodes.autoGain.gain.setTargetAtTime(totalAutoGain, this.ctx.currentTime, 0.045);
       }
 
-      const prevHold = this.peakHolds.get(ch.id);
-      let peakHoldDbfs = lvl.postPeak;
-      if (prevHold && prevHold.expiresAt > nowMs && prevHold.value > lvl.postPeak) {
-        peakHoldDbfs = prevHold.value;
-      } else {
-        this.peakHolds.set(ch.id, { value: lvl.postPeak, expiresAt: nowMs + 1400 });
-      }
-
-      const signalPresent = isRunning && !lvl.isMuted && lvl.postRms > -62;
+      const hold = this.updatePeakHold(ch.id, lvl.postPeak);
+      const grHistory = this.pushGrHistory(ch.id, lvl.gr);
+      const signalPresent = isRunning && !lvl.isMuted && lvl.postRms > -68;
       if (signalPresent && lvl.postRms > hottestChannelRms) {
         hottestChannelRms = lvl.postRms;
         hottestActiveChId = ch.id;
       }
 
-      meters[ch.id] = {
-        nodeId: ch.id,
-        inputPeakDbfs: lvl.prePeak,
-        inputRmsDbfs: lvl.preRms,
-        peakDbfs: lvl.postPeak,
-        rmsDbfs: lvl.postRms,
-        peakHoldDbfs,
-        clipping: lvl.postPeak >= -0.3,
-        gainReductionDb: lvl.gr,
-        signalPresent,
-        source: 'software_measured',
-        graphVersion,
-      };
+      // Noise floor tracking over active input stream
+      let noiseFloorDbfs = this.noiseFloorMap.get(ch.id) ?? -72;
+      if (isRunning && lvl.hasSource) {
+        const clampedFloor = Math.max(-80, Math.min(-25, lvl.preRms));
+        if (clampedFloor < noiseFloorDbfs) {
+          noiseFloorDbfs = noiseFloorDbfs * 0.85 + clampedFloor * 0.15;
+        } else {
+          noiseFloorDbfs = noiseFloorDbfs * 0.992 + clampedFloor * 0.008;
+        }
+        this.noiseFloorMap.set(ch.id, noiseFloorDbfs);
+      } else {
+        noiseFloorDbfs = -80;
+      }
 
-      if (isRunning && nodes && lvl.hasSource && !lvl.isMuted && lvl.preRms > -62) {
+      let fundamentalHz = 0;
+      if (isRunning && nodes && lvl.hasSource && !lvl.isMuted && lvl.preRms > -64) {
         nodes.preAnalyser.getFloatFrequencyData(nodes.preFreqData);
+        fundamentalHz = detectFundamentalFromFft(nodes.preFreqData, sampleRateHz);
         const insight = analyzeChannelSpectrumFft(
           ch,
           nodes.preFreqData,
@@ -1054,16 +2023,24 @@ class RealTimeConsoleAudioEngine {
         };
       }
 
-      if (signalPresent) {
-        const lin = dbToGain(lvl.postRms);
-        if (ch.assignMain) mainSumLinear += lin;
-        if (ch.assignSub) subSumLinear += lin;
-        if (ch.assignBroadcast) streamSumLinear += lin * dbToGain(ch.sends.livestream.levelDb);
-        if (ch.sends.mon1.enabled) mon1SumLinear += lin * dbToGain(ch.sends.mon1.levelDb);
-        if (ch.sends.mon2.enabled) mon2SumLinear += lin * dbToGain(ch.sends.mon2.levelDb);
-        if (ch.sends.iemChoir.enabled) iemSumLinear += lin * dbToGain(ch.sends.iemChoir.levelDb);
-        if (ch.sends.fxReverb.enabled) fxSumLinear += lin * dbToGain(ch.sends.fxReverb.levelDb);
-      }
+      meters[ch.id] = {
+        nodeId: ch.id,
+        inputPeakDbfs: lvl.prePeak,
+        inputRmsDbfs: lvl.preRms,
+        peakDbfs: lvl.postPeak,
+        rmsDbfs: lvl.postRms,
+        peakHoldDbfs: hold.peakHoldDbfs,
+        peakHoldClipped: hold.clipped,
+        noiseFloorDbfs: Number(noiseFloorDbfs.toFixed(1)),
+        crestFactorDb: signalPresent ? Number(Math.max(0, lvl.postPeak - lvl.postRms).toFixed(1)) : 0,
+        fundamentalHz,
+        clipping: lvl.postPeak >= -0.3,
+        gainReductionDb: lvl.gr,
+        gainReductionHistory: grHistory,
+        signalPresent,
+        source: 'software_measured',
+        graphVersion,
+      };
     }
 
     // Spectral masking collision tagging
@@ -1091,11 +2068,154 @@ class RealTimeConsoleAudioEngine {
       }
     }
 
+    // Read real AnalyserNodes for EVERY Bus
+    for (const bus of buses) {
+      const bNodes = this.busNodes.get(bus.id);
+      if (isRunning && bNodes && !bus.mute) {
+        const lvl = this.readAnalyserLevels(bNodes.analyser, bNodes.timeDomain);
+        const hold = this.updatePeakHold(bus.id, lvl.peakDbfs);
+        const gr = Math.max(0, Math.abs(bNodes.limiter.reduction));
+        const grHistory = this.pushGrHistory(bus.id, gr);
+        meters[bus.id] = {
+          nodeId: bus.id,
+          inputPeakDbfs: lvl.peakDbfs,
+          inputRmsDbfs: lvl.rmsDbfs,
+          peakDbfs: lvl.peakDbfs,
+          rmsDbfs: lvl.rmsDbfs,
+          peakHoldDbfs: hold.peakHoldDbfs,
+          peakHoldClipped: hold.clipped,
+          noiseFloorDbfs: -80,
+          crestFactorDb: lvl.rmsDbfs > -68 ? Number(Math.max(0, lvl.peakDbfs - lvl.rmsDbfs).toFixed(1)) : 0,
+          fundamentalHz: 0,
+          clipping: lvl.peakDbfs >= -0.2,
+          gainReductionDb: gr,
+          gainReductionHistory: grHistory,
+          signalPresent: lvl.rmsDbfs > -68,
+          source: 'software_measured',
+          graphVersion,
+        };
+      } else {
+        const grHistory = this.pushGrHistory(bus.id, 0);
+        meters[bus.id] = {
+          nodeId: bus.id,
+          inputPeakDbfs: -80,
+          inputRmsDbfs: -80,
+          peakDbfs: -80,
+          rmsDbfs: -80,
+          peakHoldDbfs: -80,
+          peakHoldClipped: false,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: false,
+          gainReductionDb: 0,
+          gainReductionHistory: grHistory,
+          signalPresent: false,
+          source: 'software_measured',
+          graphVersion,
+        };
+      }
+    }
+
+    // Read real AnalyserNodes for EVERY Speaker / Final Output
+    for (const spk of speakers) {
+      const sNodes = this.speakerNodes.get(spk.id);
+      if (isRunning && sNodes && !spk.mute) {
+        const lvl = this.readAnalyserLevels(sNodes.analyser, sNodes.timeDomain);
+        const hold = this.updatePeakHold(spk.id, lvl.peakDbfs);
+        const gr = Math.max(0, Math.abs(sNodes.limiter.reduction));
+        const grHistory = this.pushGrHistory(spk.id, gr);
+        meters[spk.id] = {
+          nodeId: spk.id,
+          inputPeakDbfs: lvl.peakDbfs,
+          inputRmsDbfs: lvl.rmsDbfs,
+          peakDbfs: lvl.peakDbfs,
+          rmsDbfs: lvl.rmsDbfs,
+          peakHoldDbfs: hold.peakHoldDbfs,
+          peakHoldClipped: hold.clipped,
+          noiseFloorDbfs: -80,
+          crestFactorDb: lvl.rmsDbfs > -68 ? Number(Math.max(0, lvl.peakDbfs - lvl.rmsDbfs).toFixed(1)) : 0,
+          fundamentalHz: 0,
+          clipping: lvl.peakDbfs >= -0.2,
+          gainReductionDb: gr,
+          gainReductionHistory: grHistory,
+          signalPresent: lvl.rmsDbfs > -68,
+          source: 'software_measured',
+          graphVersion,
+        };
+      } else {
+        meters[spk.id] = {
+          nodeId: spk.id,
+          inputPeakDbfs: -80,
+          inputRmsDbfs: -80,
+          peakDbfs: -80,
+          rmsDbfs: -80,
+          peakHoldDbfs: -80,
+          peakHoldClipped: false,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: false,
+          gainReductionDb: 0,
+          gainReductionHistory: [],
+          signalPresent: false,
+          source: 'software_measured',
+          graphVersion,
+        };
+      }
+    }
+
+    // Read real AnalyserNodes for EVERY Virtual Audio Cable
+    for (const vc of virtualCables) {
+      const vcNodes = this.virtualCableNodes.get(vc.id);
+      if (isRunning && vcNodes && vc.active) {
+        const lvl = this.readAnalyserLevels(vcNodes.analyser, vcNodes.timeDomain);
+        const hold = this.updatePeakHold(vc.id, lvl.peakDbfs);
+        meters[vc.id] = {
+          nodeId: vc.id,
+          inputPeakDbfs: lvl.peakDbfs,
+          inputRmsDbfs: lvl.rmsDbfs,
+          peakDbfs: lvl.peakDbfs,
+          rmsDbfs: lvl.rmsDbfs,
+          peakHoldDbfs: hold.peakHoldDbfs,
+          peakHoldClipped: hold.clipped,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: lvl.peakDbfs >= -0.2,
+          gainReductionDb: 0,
+          gainReductionHistory: [],
+          signalPresent: lvl.rmsDbfs > -68,
+          source: 'software_measured',
+          graphVersion,
+        };
+      } else {
+        meters[vc.id] = {
+          nodeId: vc.id,
+          inputPeakDbfs: -80,
+          inputRmsDbfs: -80,
+          peakDbfs: -80,
+          rmsDbfs: -80,
+          peakHoldDbfs: -80,
+          peakHoldClipped: false,
+          noiseFloorDbfs: -80,
+          crestFactorDb: 0,
+          fundamentalHz: 0,
+          clipping: false,
+          gainReductionDb: 0,
+          gainReductionHistory: [],
+          signalPresent: false,
+          source: 'software_measured',
+          graphVersion,
+        };
+      }
+    }
+
     // Measure actual Master Analyser time-domain and FFT frequency spectrum
     let liveMasterPeak = -80;
     let liveMasterRms = -80;
     let liveFeedbackCandidate: LiveFeedbackCandidate | null = null;
-    let spectralTiltDbPerOct = -4.5;
+    let spectralTiltDbPerOct = 0;
 
     this.spectrumBins.fill(-80);
     this.roomSpectrumBins.fill(-80);
@@ -1124,15 +2244,12 @@ class RealTimeConsoleAudioEngine {
         this.roomSpectrumBins[b] = clamped;
       }
 
-      if (liveMasterRms > -60) {
-        const lowAvg =
-          this.spectrumBins.slice(6, 20).reduce((acc, v) => acc + v, 0) / 14;
-        const highAvg =
-          this.spectrumBins.slice(36, 54).reduce((acc, v) => acc + v, 0) / 18;
+      if (liveMasterRms > -64) {
+        const lowAvg = this.spectrumBins.slice(6, 20).reduce((acc, v) => acc + v, 0) / 14;
+        const highAvg = this.spectrumBins.slice(36, 54).reduce((acc, v) => acc + v, 0) / 18;
         spectralTiltDbPerOct = Number(((highAvg - lowAvg) / 4.2).toFixed(1));
       }
 
-      // Harmonic-Aware Narrowband Feedback Detector across 80 Hz .. 12 kHz
       if (intelligenceConfig.feedbackGuardianEnabled && liveMasterRms > -42) {
         let bestProminence = 0;
         let bestIdx = -1;
@@ -1151,7 +2268,6 @@ class RealTimeConsoleAudioEngine {
             4;
           const prominence = v - neighborAvg;
           if (prominence > 15 && prominence > bestProminence) {
-            // Harmonic rejection: if 2*f and 3*f contain strong musical overtones, skip
             const h2Idx = i * 2;
             const h3Idx = i * 3;
             const hasH2 = h2Idx < binCount && this.masterFreqData[h2Idx] > v - 16;
@@ -1177,71 +2293,12 @@ class RealTimeConsoleAudioEngine {
       }
     }
 
-    const busLinearMap: Record<string, number> = {
-      'bus-main': mainSumLinear,
-      'bus-sub': subSumLinear,
-      'bus-mon1': mon1SumLinear,
-      'bus-mon2': mon2SumLinear,
-      'bus-iem': iemSumLinear,
-      'bus-fx': fxSumLinear,
-      'bus-stream': streamSumLinear,
-    };
-
-    for (const bus of buses) {
-      if (bus.id === 'bus-main') {
-        const inputRms = gainToDb(mainSumLinear);
-        const inputPeak = Math.max(inputRms, liveMasterPeak);
-        const rms = bus.mute || !isRunning ? -80 : liveMasterRms;
-        const peak = bus.mute || !isRunning ? -80 : liveMasterPeak;
-        const gr =
-          !bus.mute && isRunning && this.masterLimiter
-            ? Math.max(0, Math.abs(this.masterLimiter.reduction))
-            : 0;
-        meters[bus.id] = {
-          nodeId: bus.id,
-          inputPeakDbfs: Math.max(inputPeak, liveMasterPeak),
-          inputRmsDbfs: Math.max(inputRms, liveMasterRms),
-          peakDbfs: peak,
-          rmsDbfs: rms,
-          peakHoldDbfs: Math.max(peak, -80),
-          clipping: peak >= -0.2,
-          gainReductionDb: gr,
-          signalPresent: isRunning && !bus.mute && rms > -62,
-          source: 'software_measured',
-          graphVersion,
-        };
-        continue;
-      }
-
-      const preLin = isRunning ? busLinearMap[bus.id] ?? 0 : 0;
-      const lin = bus.mute ? 0 : preLin * dbToGain(bus.faderDb);
-      const inputRms = gainToDb(preLin);
-      const inputPeak = preLin > 0.0001 ? Math.min(0, inputRms + 3.0) : -80;
-      const rms = gainToDb(lin);
-      const peak = lin > 0.0001 ? Math.min(bus.limiterCeilingDb, rms + 3.0) : -80;
-      const gr = rms + 3.0 > bus.limiterCeilingDb ? rms + 3.0 - bus.limiterCeilingDb : 0;
-
-      meters[bus.id] = {
-        nodeId: bus.id,
-        inputPeakDbfs: inputPeak,
-        inputRmsDbfs: inputRms,
-        peakDbfs: peak,
-        rmsDbfs: rms,
-        peakHoldDbfs: peak,
-        clipping: peak >= -0.2,
-        gainReductionDb: gr,
-        signalPresent: isRunning && !bus.mute && rms > -62,
-        source: 'software_measured',
-        graphVersion,
-      };
-    }
-
     const shortTermLufs =
       isRunning && liveMasterRms > -68 ? Number((liveMasterRms - 0.8).toFixed(1)) : -80;
     const headroomMarginDb =
       isRunning && liveMasterPeak > -70
         ? Number(Math.max(0, -0.8 - liveMasterPeak).toFixed(1))
-        : 24;
+        : 0;
 
     return {
       meters,

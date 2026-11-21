@@ -66,8 +66,10 @@ export const MasterSystemOverview: React.FC = () => {
   const activeAlerts = feedbackIncidents.filter(
     (f) => f.status === 'feedback_detected' || f.status === 'risk_predicted'
   );
-  const ringRiskPct = activeAlerts.length > 0 ? Math.min(92, 42 + activeAlerts.length * 22) : 8;
-  const headroomDb = Math.max(2, Math.min(24, Math.abs(mainMeter?.peakDbfs ?? -18)));
+  const ringRiskPct = activeAlerts.length > 0 ? Math.min(92, 42 + activeAlerts.length * 22) : 0;
+  const headroomDb = mainMeter?.signalPresent
+    ? Math.max(0, Math.min(24, Math.abs(mainMeter.peakDbfs)))
+    : 24;
   const activePatchedCount = channels.filter((c) => c.sourceBinding?.active).length;
 
   const rtaW = 620;
@@ -128,7 +130,7 @@ export const MasterSystemOverview: React.FC = () => {
               </span>
             </div>
             <p className="text-[10px] font-mono text-slate-400 truncate">
-              Graph v{graphVersion} · {activePatchedCount}/12 Patched · {detectedHardware.length} OS Endpoints ·{' '}
+              Graph v{graphVersion} · {activePatchedCount}/{channels.length} Patched · {detectedHardware.length} OS Endpoints ·{' '}
               Short-Term{' '}
               {systemIntelligence.shortTermLufs <= -75
                 ? '-∞ LUFS'
@@ -140,9 +142,9 @@ export const MasterSystemOverview: React.FC = () => {
         {/* In-Place Overview Module Tabs */}
         <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
           {[
-            { id: 'bridge', label: 'FOH BRIDGE & 12-CH METERS', icon: Activity },
+            { id: 'bridge', label: `FOH BRIDGE & ${channels.length}-CH METERS`, icon: Activity },
             { id: 'rta', label: 'RTA SPECTRUM & XOVER', icon: Waves },
-            { id: 'matrix', label: '6-BUS MATRIX & ZONES', icon: Speaker },
+            { id: 'matrix', label: `${buses.length}-BUS MATRIX & OUTPUTS`, icon: Speaker },
           ].map((t) => {
             const Icon = t.icon;
             return (
@@ -323,12 +325,12 @@ export const MasterSystemOverview: React.FC = () => {
                 style={{ color: 'var(--console-accent-text)' }}
                 className="font-semibold uppercase tracking-wider"
               >
-                12-Channel Dual In/Out Meter Bridge
+                {channels.length}-Channel Dual In/Out Meter Bridge
               </span>
               <span className="text-slate-400">Click any channel OLED to jump straight into Mix Console</span>
             </div>
 
-            <div className="flex-1 min-h-0 grid grid-cols-3 md:grid-cols-6 gap-2">
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-3 md:grid-cols-6 gap-2 pr-0.5 content-start">
               {channels.map((ch) => {
                 const m = meters[ch.id];
                 const isPatched = Boolean(ch.sourceBinding?.active);
@@ -545,13 +547,13 @@ export const MasterSystemOverview: React.FC = () => {
           <div className="xl:col-span-7 console-chassis rounded-lg border p-3 flex flex-col justify-between gap-2.5 overflow-hidden">
             <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
               <span className="text-[11px] font-mono font-semibold text-amber-300 uppercase">
-                6-Bus Master Output Matrix
+                {buses.length}-Bus Master Output Matrix
               </span>
               <span className="text-[10px] font-mono text-slate-400">Live Bus Faders &amp; Mutes</span>
             </div>
 
-            <div className="flex-1 min-h-0 grid grid-cols-3 sm:grid-cols-6 gap-2">
-              {buses.slice(0, 6).map((b) => {
+            <div className="flex-1 min-h-0 overflow-y-auto grid grid-cols-3 sm:grid-cols-6 gap-2 pr-0.5">
+              {buses.map((b) => {
                 const bm = meters[b.id];
                 return (
                   <div
@@ -605,7 +607,7 @@ export const MasterSystemOverview: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex-1 min-h-0 flex flex-col justify-between gap-1.5">
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5 pr-0.5">
               {speakers.map((spk) => {
                 const bm = meters[spk.sourceBusId];
                 return (

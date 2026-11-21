@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { Sliders, ArrowLeftRight, Sparkles, Waves, Activity } from 'lucide-react';
+import { Sliders, ArrowLeftRight, Sparkles, Waves, Activity, Plus, Trash2 } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
 import { EQ_PRESETS, getRecommendedEqPresetsForChannel } from '../../engine/profiles';
 import { computeChannelEqResponseDb } from '../../engine/webAudioEngine';
@@ -9,7 +9,7 @@ import { ConsoleButton } from '../hardware/ConsoleButton';
 import { AnalogVuMeter, LedMeter } from '../hardware/LedMeter';
 import { GraphicEq31Band } from '../hardware/GraphicEq31Band';
 
-const BAND_COLORS = ['#f59e0b', '#38bdf8', '#10b981', '#f43f5e'];
+const BAND_COLORS = ['#f59e0b', '#38bdf8', '#10b981', '#f43f5e', '#a78bfa', '#fb923c', '#2dd4bf', '#e879f9'];
 
 function freqToX(freq: number, width: number): number {
   const minLog = Math.log10(20);
@@ -37,9 +37,18 @@ function yToDb(y: number, height: number): number {
 export const DspEqWorkspace: React.FC = () => {
   const {
     channels,
+    buses,
     selectedChannelId,
     setSelectedChannelId,
+    selectedBusId,
+    setSelectedBusId,
     updateChannel,
+    addChannelEqBand,
+    removeChannelEqBand,
+    updateBus,
+    addBusEqBand,
+    updateBusEqBand,
+    removeBusEqBand,
     meters,
     spectrum,
     autoCalibrateChannel,
@@ -47,15 +56,23 @@ export const DspEqWorkspace: React.FC = () => {
 
   const chIdx = Math.max(0, channels.findIndex((c) => c.id === selectedChannelId));
   const ch = channels[chIdx] ?? channels[0];
-  const partnerCh = channels[(chIdx + 1) % channels.length];
-  const m = meters[ch.id];
+  const partnerCh = channels[(chIdx + 1) % channels.length] ?? ch;
+  const activeBus = buses.find((b) => b.id === selectedBusId) ?? buses[0];
 
+  const [targetDomain, setTargetDomain] = useState<'channel' | 'bus'>('channel');
   const [eqModuleTab, setEqModuleTab] = useState<'para' | 'geq31' | 'dynamics' | 'presets'>('para');
   const [selectedBandIdx, setSelectedBandIdx] = useState<number>(0);
   const [activePresetByChannel, setActivePresetByChannel] = useState<Record<string, string | null>>({});
   const [abCompareB, setAbCompareB] = useState<boolean>(false);
   const [draggingBandIdx, setDraggingBandIdx] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+
+  const isBusMode = targetDomain === 'bus';
+  const m = meters[isBusMode ? activeBus.id : ch.id];
+  const activeEqEnabled = isBusMode ? activeBus.eqEnabled : ch.eqEnabled;
+  const activeBands: EqBand[] = isBusMode ? activeBus.eqBands ?? [] : ch.eqBands;
+  const clampedBandIdx = Math.min(selectedBandIdx, Math.max(0, activeBands.length - 1));
+  const activeBand = activeBands[clampedBandIdx];
 
   const activePresetId = activePresetByChannel[ch.id] ?? null;
   const recommendation = useMemo(() => getRecommendedEqPresetsForChannel(ch), [ch]);
@@ -109,30 +126,68 @@ export const DspEqWorkspace: React.FC = () => {
   const svgH = 220;
 
   const updateBand = (idx: number, patch: Partial<EqBand>) => {
+    if (isBusMode) {
+      const band = activeBands[idx];
+      if (!band) return;
+      updateBusEqBand(activeBus.id, band.id, patch);
+      return;
+    }
     setActivePresetByChannel((prev) => ({ ...prev, [ch.id]: null }));
     const nextBands = ch.eqBands.map((b, i) => (i === idx ? { ...b, ...patch } : b));
     updateChannel(ch.id, { eqBands: nextBands });
+  };
+
+  const handleAddBand = () => {
+    const newFreq = Math.min(16000, Math.max(80, Math.round(400 * Math.pow(1.45, activeBands.length % 7))));
+    if (isBusMode) {
+      addBusEqBand(activeBus.id, { freqHz: newFreq, label: `B${activeBands.length + 1}` });
+    } else {
+      addChannelEqBand(ch.id, { freqHz: newFreq, label: `PEQ ${activeBands.length + 1}` });
+    }
+    setSelectedBandIdx(activeBands.length);
+  };
+
+  const handleDeleteSelectedBand = () => {
+    if (!activeBand || activeBands.length <= 1) return;
+    if (isBusMode) {
+      removeBusEqBand(activeBus.id, activeBand.id);
+    } else {
+      removeChannelEqBand(ch.id, activeBand.id);
+    }
+    setSelectedBandIdx(Math.max(0, clampedBandIdx - 1));
   };
 
   const eqCurvePath = useMemo(() => {
     const pts: string[] = [];
     for (let i = 0; i <= 160; i++) {
       const freq = 20 * Math.pow(1000, i / 160);
-      const db = computeChannelEqResponseDb(
-        freq,
-        ch.hpfEnabled,
-        ch.hpfFreqHz,
-        ch.eqEnabled,
-        ch.eqBands,
-        ch.geqEnabled,
-        ch.geqBands
-      );
+      const db = isBusMode
+        ? computeChannelEqResponseDb(freq, false, 20, activeBus.eqEnabled, activeBands, false)
+        : computeChannelEqResponseDb(
+            freq,
+            ch.hpfEnabled,
+            ch.hpfFreqHz,
+            ch.eqEnabled,
+            ch.eqBands,
+            ch.geqEnabled,
+            ch.geqBands
+          );
       const x = freqToX(freq, svgW);
       const y = dbToY(db, svgH);
       pts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
     return pts.join(' ');
-  }, [ch.hpfEnabled, ch.hpfFreqHz, ch.eqEnabled, ch.eqBands, ch.geqEnabled, ch.geqBands]);
+  }, [
+    isBusMode,
+    activeBus.eqEnabled,
+    activeBands,
+    ch.hpfEnabled,
+    ch.hpfFreqHz,
+    ch.eqEnabled,
+    ch.eqBands,
+    ch.geqEnabled,
+    ch.geqBands,
+  ]);
 
   const spectrumPath = useMemo(() => {
     const pts: string[] = [];
@@ -156,49 +211,119 @@ export const DspEqWorkspace: React.FC = () => {
     });
   };
 
-  const activeBand = ch.eqBands[selectedBandIdx] ?? ch.eqBands[0];
+  const flowStages = isBusMode
+    ? [
+        { label: 'BUS SUM', on: true },
+        { label: `BUS PEQ (${activeBands.length}B)`, on: activeBus.eqEnabled },
+        { label: `LIMITER ${activeBus.limiterCeilingDb}dB`, on: true },
+        { label: `FADER ${activeBus.faderDb.toFixed(1)}dB`, on: !activeBus.mute },
+        { label: 'XOVER / OUT', on: !activeBus.mute },
+      ]
+    : [
+        { label: ch.sourceBinding?.active ? 'LIVE IN' : 'IN IDLE', on: Boolean(ch.sourceBinding?.active) },
+        { label: `TRIM ${ch.softwareTrimDb >= 0 ? '+' : ''}${ch.softwareTrimDb.toFixed(1)}`, on: true },
+        { label: ch.polarityInvert ? 'Ø INV' : 'Ø NORM', on: ch.polarityInvert },
+        { label: `${ch.delayMs.toFixed(1)}ms`, on: ch.delayMs > 0 },
+        { label: `HPF ${ch.hpfFreqHz}Hz`, on: ch.hpfEnabled },
+        { label: `PEQ (${ch.eqBands.length}B)`, on: ch.eqEnabled },
+        { label: '31B GEQ', on: ch.geqEnabled },
+        { label: 'DYNAMICS', on: ch.dynamics.compEnabled || ch.dynamics.gateEnabled },
+        { label: `FADER ${ch.faderDb.toFixed(1)}`, on: !ch.mute },
+        { label: 'BUS → OUT', on: ch.assignMain || ch.assignSub || ch.assignBroadcast },
+      ];
 
   return (
     <div className="h-full min-h-0 flex flex-col p-2.5 gap-2 overflow-hidden">
-      {/* Top Channel Selector + In-Place Module Switcher Tabs */}
+      {/* Top Channel/Bus Selector + In-Place Module Switcher Tabs */}
       <div className="console-panel rounded-md px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
           <Sliders className="w-4 h-4 text-sky-400 shrink-0" />
-          <select
-            value={ch.id}
-            onChange={(e) => setSelectedChannelId(e.target.value)}
-            className="console-btn-surface rounded px-2 py-1 text-xs font-mono text-slate-100"
-          >
-            {channels.map((c) => (
-              <option key={c.id} value={c.id}>
-                CH {String(c.number).padStart(2, '0')} · {c.name}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => setSelectedChannelId(partnerCh.id)}
-            className="px-2 py-1 rounded console-accent-active border text-[10px] font-mono font-bold whitespace-nowrap"
-          >
-            2ND CH ({partnerCh.shortName})
-          </button>
+          <div className="console-module-rack p-0.5 rounded flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                setTargetDomain('channel');
+                setSelectedBandIdx(0);
+              }}
+              className={`px-2 py-0.5 rounded-[2px] text-[10px] font-mono ${
+                targetDomain === 'channel' ? 'console-module-tab-active' : 'console-module-tab'
+              }`}
+            >
+              INPUT CH
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTargetDomain('bus');
+                setEqModuleTab('para');
+                setSelectedBandIdx(0);
+              }}
+              className={`px-2 py-0.5 rounded-[2px] text-[10px] font-mono ${
+                targetDomain === 'bus' ? 'console-module-tab-active' : 'console-module-tab'
+              }`}
+            >
+              MIX BUS
+            </button>
+          </div>
+
+          {!isBusMode ? (
+            <>
+              <select
+                value={ch.id}
+                onChange={(e) => {
+                  setSelectedChannelId(e.target.value);
+                  setSelectedBandIdx(0);
+                }}
+                className="console-btn-surface rounded px-2 py-1 text-xs font-mono text-slate-100"
+              >
+                {channels.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    CH {String(c.number).padStart(2, '0')} · {c.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setSelectedChannelId(partnerCh.id)}
+                className="px-2 py-1 rounded console-accent-active border text-[10px] font-mono font-bold whitespace-nowrap"
+              >
+                NEXT CH ({partnerCh.shortName})
+              </button>
+            </>
+          ) : (
+            <select
+              value={activeBus.id}
+              onChange={(e) => {
+                setSelectedBusId(e.target.value);
+                setSelectedBandIdx(0);
+              }}
+              className="console-btn-surface rounded px-2 py-1 text-xs font-mono text-slate-100"
+            >
+              {buses.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.shortName} · {b.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         {/* Module Tabs: Switch In-Place Without Vertical Scrolling */}
         <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
           {[
-            { id: 'para', label: '4-BAND PARAMETRIC', icon: Sliders },
-            { id: 'geq31', label: '31-BAND GRAPHIC EQ', icon: Waves },
-            { id: 'dynamics', label: 'DYNAMICS & HPF', icon: Activity },
-            { id: 'presets', label: 'QUICK-LOAD CURVES', icon: Sparkles },
+            { id: 'para', label: `PARAMETRIC EQ (${activeBands.length}B)`, icon: Sliders, disabled: false },
+            { id: 'geq31', label: '31-BAND GRAPHIC EQ', icon: Waves, disabled: isBusMode },
+            { id: 'dynamics', label: 'DYNAMICS & HPF', icon: Activity, disabled: isBusMode },
+            { id: 'presets', label: 'QUICK-LOAD CURVES', icon: Sparkles, disabled: isBusMode },
           ].map((t) => {
             const Icon = t.icon;
             return (
               <button
                 key={t.id}
                 type="button"
+                disabled={t.disabled}
                 onClick={() => setEqModuleTab(t.id as typeof eqModuleTab)}
-                className={`px-2.5 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1 whitespace-nowrap transition-all ${
+                className={`px-2.5 py-1 rounded-[3px] text-[10px] font-mono flex items-center gap-1 whitespace-nowrap transition-all disabled:opacity-35 ${
                   eqModuleTab === t.id ? 'console-module-tab-active' : 'console-module-tab'
                 }`}
               >
@@ -210,13 +335,15 @@ export const DspEqWorkspace: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-1.5">
-          <ConsoleButton
-            label="AUTO-EQ"
-            size="xs"
-            color="emerald"
-            active={false}
-            onClick={() => autoCalibrateChannel(ch.id)}
-          />
+          {!isBusMode && (
+            <ConsoleButton
+              label="AUTO-EQ"
+              size="xs"
+              color="emerald"
+              active={false}
+              onClick={() => autoCalibrateChannel(ch.id)}
+            />
+          )}
           <ConsoleButton
             label={abCompareB ? 'SLOT B' : 'SLOT A'}
             size="xs"
@@ -225,55 +352,87 @@ export const DspEqWorkspace: React.FC = () => {
             onClick={() => setAbCompareB((v) => !v)}
           />
           <ConsoleButton
-            label={ch.eqEnabled ? 'EQ ON' : 'EQ BYP'}
+            label={activeEqEnabled ? 'EQ ON' : 'EQ BYP'}
             size="xs"
-            color={ch.eqEnabled ? 'amber' : 'crimson'}
-            active={ch.eqEnabled}
-            onClick={() => updateChannel(ch.id, { eqEnabled: !ch.eqEnabled })}
+            color={activeEqEnabled ? 'amber' : 'crimson'}
+            active={activeEqEnabled}
+            onClick={() =>
+              isBusMode
+                ? updateBus(activeBus.id, { eqEnabled: !activeBus.eqEnabled })
+                : updateChannel(ch.id, { eqEnabled: !ch.eqEnabled })
+            }
           />
         </div>
       </div>
 
-      {/* Quick-Load Context Bar (Always 1-Click Accessible) */}
+      {/* Front-to-Back Console Signal Flow Strip + Quick-Load Context Bar */}
       <div
         className="console-panel rounded-md px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 border shrink-0"
         style={{ borderColor: 'var(--console-accent-border)' }}
       >
-        <div className="flex items-center gap-2 min-w-0">
-          <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-          <span className="text-[10px] font-mono text-slate-300 truncate">
-            <strong style={{ color: 'var(--console-accent-text)' }}>Match:</strong> {recommendation.matchReason}
-          </span>
+        <div className="flex items-center gap-1 flex-wrap text-[9px] font-mono">
+          {flowStages.map((st, idx) => (
+            <React.Fragment key={st.label}>
+              <span
+                className={`px-1.5 py-0.5 rounded border ${
+                  st.on
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : 'border-white/10 bg-black/30 text-slate-500'
+                }`}
+              >
+                {st.label}
+              </span>
+              {idx < flowStages.length - 1 && <span className="text-slate-600">→</span>}
+            </React.Fragment>
+          ))}
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+
+        {!isBusMode ? (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[10px] font-mono text-slate-400 hidden xl:inline truncate max-w-[210px]">
+              {recommendation.matchReason}
+            </span>
+            <ConsoleButton
+              label={
+                activePresetId === recommendation.primary.id
+                  ? `ACTIVE: ${recommendation.primary.name}`
+                  : `QUICK-LOAD: ${recommendation.primary.name}`
+              }
+              size="xs"
+              color="amber"
+              active={activePresetId === recommendation.primary.id}
+              onClick={() => togglePreset(recommendation.primary.id)}
+            />
+            <ConsoleButton
+              label="FLAT"
+              size="xs"
+              color="cyan"
+              active={false}
+              onClick={() => {
+                setActivePresetByChannel((prev) => ({ ...prev, [ch.id]: null }));
+                updateChannel(ch.id, {
+                  eqBands: ch.eqBands.map((b) => ({ ...b, gainDb: 0 })),
+                  geqBands: new Array(31).fill(0),
+                });
+              }}
+            />
+          </div>
+        ) : (
           <ConsoleButton
-            label={
-              activePresetId === recommendation.primary.id
-                ? `ACTIVE: ${recommendation.primary.name}`
-                : `QUICK-LOAD: ${recommendation.primary.name}`
-            }
-            size="xs"
-            color="amber"
-            active={activePresetId === recommendation.primary.id}
-            onClick={() => togglePreset(recommendation.primary.id)}
-          />
-          <ConsoleButton
-            label="FLAT"
+            label="FLATTEN BUS EQ"
             size="xs"
             color="cyan"
             active={false}
-            onClick={() => {
-              setActivePresetByChannel((prev) => ({ ...prev, [ch.id]: null }));
-              updateChannel(ch.id, {
-                eqBands: ch.eqBands.map((b) => ({ ...b, gainDb: 0 })),
-                geqBands: new Array(31).fill(0),
-              });
-            }}
+            onClick={() =>
+              updateBus(activeBus.id, {
+                eqBands: activeBands.map((b) => ({ ...b, gainDb: 0 })),
+              })
+            }
           />
-        </div>
+        )}
       </div>
 
-      {/* TAB 1: 4-BAND PARAMETRIC BODE + KNOBS */}
+      {/* TAB 1: DYNAMIC N-BAND PARAMETRIC BODE + KNOBS */}
       {eqModuleTab === 'para' && (
         <div className="flex-1 min-h-0 flex flex-col gap-2.5 overflow-hidden">
           <div className="flex-1 min-h-0 console-chassis rounded-lg border p-3 grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch overflow-hidden">
@@ -301,8 +460,12 @@ export const DspEqWorkspace: React.FC = () => {
 
             <div className="xl:col-span-8 console-well rounded-md p-2.5 flex flex-col justify-between min-h-0">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-                <span>COMBINED PARAMETRIC + 31-BAND BODE &amp; LIVE FFT</span>
-                <span className="text-sky-300">Drag nodes · Wheel adjusts Q</span>
+                <span>
+                  {isBusMode
+                    ? `${activeBus.name.toUpperCase()} · ${activeBands.length}-BAND PARAMETRIC BODE`
+                    : `COMBINED PARAMETRIC (${activeBands.length}B) + 31-BAND BODE & LIVE FFT`}
+                </span>
+                <span className="text-sky-300">Drag nodes · Wheel adjusts Q · Add/Remove bands below</span>
               </div>
               <svg
                 ref={svgRef}
@@ -345,13 +508,13 @@ export const DspEqWorkspace: React.FC = () => {
                 <path
                   d={eqCurvePath}
                   fill="none"
-                  stroke={ch.eqEnabled || ch.geqEnabled ? '#f59e0b' : '#64748b'}
+                  stroke={activeEqEnabled || (!isBusMode && ch.geqEnabled) ? '#f59e0b' : '#64748b'}
                   strokeWidth="2.5"
                 />
-                {ch.eqBands.map((band, idx) => {
+                {activeBands.map((band, idx) => {
                   const cx = freqToX(band.freqHz, svgW);
                   const cy = dbToY(band.gainDb, svgH);
-                  const isActive = idx === selectedBandIdx;
+                  const isActive = idx === clampedBandIdx;
                   const col = BAND_COLORS[idx % BAND_COLORS.length];
                   return (
                     <g
@@ -414,93 +577,119 @@ export const DspEqWorkspace: React.FC = () => {
           </div>
 
           <div className="console-chassis rounded-lg border p-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-1.5">
-              {ch.eqBands.map((b, i) => (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {activeBands.map((b, i) => (
                 <button
                   key={b.id}
                   type="button"
                   onClick={() => setSelectedBandIdx(i)}
                   className={`px-2 py-1 rounded text-[10px] font-mono border ${
-                    i === selectedBandIdx ? 'console-accent-active font-bold' : 'console-btn-surface text-slate-400'
+                    i === clampedBandIdx ? 'console-accent-active font-bold' : 'console-btn-surface text-slate-400'
                   }`}
                 >
                   {i + 1}. {b.label}
                 </button>
               ))}
-              <select
-                value={activeBand.shape}
-                onChange={(e) => updateBand(selectedBandIdx, { shape: e.target.value as FilterShape })}
-                className="console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200"
+              <button
+                type="button"
+                onClick={handleAddBand}
+                className="px-2 py-1 rounded border border-emerald-500/40 bg-emerald-500/10 text-[10px] font-mono text-emerald-300 hover:bg-emerald-500/20 flex items-center gap-1"
               >
-                <option value="bell">Bell</option>
-                <option value="low-shelf">Low Shelf</option>
-                <option value="high-shelf">High Shelf</option>
-                <option value="notch">Notch</option>
-                <option value="band-pass">Band-Pass</option>
-              </select>
-              <ConsoleButton
-                label={activeBand.enabled ? 'BAND IN' : 'OUT'}
-                size="xs"
-                color="emerald"
-                active={activeBand.enabled}
-                onClick={() => updateBand(selectedBandIdx, { enabled: !activeBand.enabled })}
-              />
+                <Plus className="w-3 h-3" />
+                <span>ADD BAND</span>
+              </button>
+              {activeBand && activeBands.length > 1 && (
+                <button
+                  type="button"
+                  onClick={handleDeleteSelectedBand}
+                  title="Remove selected EQ band"
+                  className="px-2 py-1 rounded border border-rose-500/40 bg-rose-500/10 text-[10px] font-mono text-rose-300 hover:bg-rose-500/20 flex items-center gap-1"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              )}
+              {activeBand && (
+                <>
+                  <select
+                    value={activeBand.shape}
+                    onChange={(e) => updateBand(clampedBandIdx, { shape: e.target.value as FilterShape })}
+                    className="console-btn-surface rounded px-2 py-1 text-[10px] font-mono text-slate-200"
+                  >
+                    <option value="bell">Bell</option>
+                    <option value="low-shelf">Low Shelf</option>
+                    <option value="high-shelf">High Shelf</option>
+                    <option value="notch">Notch</option>
+                    <option value="band-pass">Band-Pass</option>
+                  </select>
+                  <ConsoleButton
+                    label={activeBand.enabled ? 'BAND IN' : 'OUT'}
+                    size="xs"
+                    color="emerald"
+                    active={activeBand.enabled}
+                    onClick={() => updateBand(clampedBandIdx, { enabled: !activeBand.enabled })}
+                  />
+                </>
+              )}
             </div>
 
-            <div className="flex items-center gap-4">
-              <RotaryKnob
-                label="HPF"
-                value={ch.hpfFreqHz}
-                min={20}
-                max={350}
-                step={5}
-                unit="Hz"
-                size={38}
-                accentColor="amber"
-                disabled={!ch.hpfEnabled}
-                onChange={(v) => updateChannel(ch.id, { hpfFreqHz: v })}
-              />
-              <RotaryKnob
-                label="FREQ"
-                value={activeBand.freqHz}
-                min={20}
-                max={18000}
-                step={10}
-                size={38}
-                accentColor="cyan"
-                formatValue={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)}k` : `${Math.round(v)}Hz`)}
-                onChange={(v) => updateBand(selectedBandIdx, { freqHz: v })}
-              />
-              <RotaryKnob
-                label="GAIN"
-                value={activeBand.gainDb}
-                min={-18}
-                max={18}
-                step={0.5}
-                bipolar
-                unit="dB"
-                size={38}
-                accentColor="emerald"
-                onChange={(v) => updateBand(selectedBandIdx, { gainDb: v })}
-              />
-              <RotaryKnob
-                label="Q"
-                value={activeBand.q}
-                min={0.4}
-                max={14}
-                step={0.1}
-                size={38}
-                accentColor="rose"
-                formatValue={(v) => v.toFixed(1)}
-                onChange={(v) => updateBand(selectedBandIdx, { q: v })}
-              />
-            </div>
+            {activeBand && (
+              <div className="flex items-center gap-4">
+                {!isBusMode && (
+                  <RotaryKnob
+                    label="HPF"
+                    value={ch.hpfFreqHz}
+                    min={20}
+                    max={350}
+                    step={5}
+                    unit="Hz"
+                    size={38}
+                    accentColor="amber"
+                    disabled={!ch.hpfEnabled}
+                    onChange={(v) => updateChannel(ch.id, { hpfFreqHz: v })}
+                  />
+                )}
+                <RotaryKnob
+                  label="FREQ"
+                  value={activeBand.freqHz}
+                  min={20}
+                  max={18000}
+                  step={10}
+                  size={38}
+                  accentColor="cyan"
+                  formatValue={(v) => (v >= 1000 ? `${(v / 1000).toFixed(2)}k` : `${Math.round(v)}Hz`)}
+                  onChange={(v) => updateBand(clampedBandIdx, { freqHz: v })}
+                />
+                <RotaryKnob
+                  label="GAIN"
+                  value={activeBand.gainDb}
+                  min={-18}
+                  max={18}
+                  step={0.5}
+                  bipolar
+                  unit="dB"
+                  size={38}
+                  accentColor="emerald"
+                  onChange={(v) => updateBand(clampedBandIdx, { gainDb: v })}
+                />
+                <RotaryKnob
+                  label="Q"
+                  value={activeBand.q}
+                  min={0.4}
+                  max={14}
+                  step={0.1}
+                  size={38}
+                  accentColor="rose"
+                  formatValue={(v) => v.toFixed(1)}
+                  onChange={(v) => updateBand(clampedBandIdx, { q: v })}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {/* TAB 2: FULL 31-BAND GRAPHIC EQ */}
-      {eqModuleTab === 'geq31' && (
+      {eqModuleTab === 'geq31' && !isBusMode && (
         <div className="flex-1 min-h-0 flex flex-col justify-center overflow-hidden">
           <GraphicEq31Band
             channelLabel={`CH ${String(ch.number).padStart(2, '0')} · ${ch.name}`}
@@ -546,7 +735,7 @@ export const DspEqWorkspace: React.FC = () => {
       )}
 
       {/* TAB 3: DYNAMICS, GATE, COMP & DELAY */}
-      {eqModuleTab === 'dynamics' && (
+      {eqModuleTab === 'dynamics' && !isBusMode && (
         <div className="flex-1 min-h-0 console-chassis rounded-lg border p-4 flex flex-col justify-between gap-4 overflow-hidden">
           <div className="flex items-center justify-between border-b border-white/10 pb-2">
             <span className="font-mono text-xs font-semibold text-emerald-300 uppercase">
@@ -689,7 +878,7 @@ export const DspEqWorkspace: React.FC = () => {
       )}
 
       {/* TAB 4: CONTEXT-AWARE QUICK-LOAD STARTING CURVE LIBRARY */}
-      {eqModuleTab === 'presets' && (
+      {eqModuleTab === 'presets' && !isBusMode && (
         <div className="flex-1 min-h-0 console-chassis rounded-lg border p-3.5 flex flex-col justify-between gap-3 overflow-hidden">
           <div className="flex items-center justify-between border-b border-white/10 pb-2">
             <div>
@@ -697,12 +886,12 @@ export const DspEqWorkspace: React.FC = () => {
                 Context-Aware EQ Curve Library · CH {String(ch.number).padStart(2, '0')} ({ch.name})
               </h2>
               <p className="text-[11px] font-mono text-slate-400">
-                1-Click toggle loads both 4-Band Parametric and 31-Band Graphic EQ curves. Click again to revert flat.
+                1-Click toggle loads both Parametric EQ and 31-Band Graphic EQ curves. Click again to revert flat.
               </p>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 content-start">
+          <div className="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 content-start overflow-y-auto pr-1">
             {EQ_PRESETS.map((preset) => {
               const isOn = activePresetId === preset.id;
               const isRec = preset.id === recommendation.primary.id;

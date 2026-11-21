@@ -11,6 +11,7 @@ export const SignalJourneyModal: React.FC = () => {
     channels,
     buses,
     speakers,
+    virtualCables,
     openSignalJourney,
     setWorkspace,
     setSelectedChannelId,
@@ -27,7 +28,7 @@ export const SignalJourneyModal: React.FC = () => {
       setSelectedChannelId(stage.nodeId);
       setWorkspace('inputs', 'live-console');
       closeSignalJourney();
-    } else if (stage.nodeId.startsWith('bus-')) {
+    } else if (stage.nodeId.startsWith('bus-') || stage.nodeId.startsWith('vc-')) {
       setWorkspace('routing', 'universal-routing');
       closeSignalJourney();
     } else if (stage.nodeId.startsWith('spk-')) {
@@ -148,6 +149,15 @@ export const SignalJourneyModal: React.FC = () => {
                   </option>
                 ))}
               </optgroup>
+              {virtualCables.length > 0 && (
+                <optgroup label="Built-In Virtual Audio Cables">
+                  {virtualCables.map((vc) => (
+                    <option key={vc.id} value={vc.id}>
+                      {vc.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
 
             <div className="flex items-center console-well rounded p-0.5">

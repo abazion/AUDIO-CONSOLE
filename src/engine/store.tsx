@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  createDynamicChannelStrip,
+  createDynamicSpeakerOutput,
   HARDWARE_PROFILES,
   INITIAL_BUSES,
   INITIAL_CHANNELS,
@@ -7,16 +9,20 @@ import {
   INITIAL_SCENES,
   INITIAL_SOUND_CHECK,
   INITIAL_SPEAKERS,
+  INITIAL_VIRTUAL_CABLES,
   INITIAL_VIRTUAL_DI,
+  makeDefaultEqBands,
 } from './profiles';
 import type {
   AiProposal,
   AudioDevice,
   AudioSourceBinding,
   BusNode,
+  ChannelSendConfig,
   ChannelStrip,
   ConsoleThemeId,
   DetectedHardwareDevice,
+  EqBand,
   FeedbackIncident,
   GraphTraceResult,
   GraphTraceStage,
@@ -29,6 +35,7 @@ import type {
   SoundCheckItem,
   SpeakerBand,
   StructuredEvent,
+  VirtualCableNode,
   VirtualDiState,
   WorkspaceId,
 } from './types';
@@ -46,6 +53,7 @@ export interface ConsoleSnapshotState {
   channels: ChannelStrip[];
   buses: BusNode[];
   speakers: SpeakerBand[];
+  virtualCables: VirtualCableNode[];
   virtualDi: VirtualDiState;
   feedbackIncidents: FeedbackIncident[];
   soundCheckItems: SoundCheckItem[];
@@ -69,11 +77,15 @@ interface AudioConsoleContextValue {
   openSignalJourney: (nodeId: string) => void;
   closeSignalJourney: () => void;
 
-  // Source Patchbay Modal
+  // Source Patchbay Modal & Gain Staging Assistant Modal
   sourceBayOpen: boolean;
   sourceBayChannelId: string;
   openSourceBay: (channelId?: string) => void;
   closeSourceBay: () => void;
+  gainStagingOpen: boolean;
+  gainStagingChannelId: string | null;
+  openGainStagingAssistant: (channelId?: string) => void;
+  closeGainStagingAssistant: () => void;
 
   // Hardware, DB Persistence & Engine State
   hardwareProfile: HardwareProfile;
@@ -97,14 +109,45 @@ interface AudioConsoleContextValue {
   bufferLatencyMs: number;
   xrunsCount: number;
   resetXruns: () => void;
+  resetPeakHold: (nodeId?: string) => void;
 
-  // Multi-Source Patching (Mic, Desktop Audio, Audio File, Tone)
+  // Real Broadcast / Stream Recorder
+  recordingActive: boolean;
+  recordingDurationSec: number;
+  lastRecordingUrl: string | null;
+  lastRecordingFilename: string | null;
+  toggleStreamRecording: (busId?: string) => Promise<{ ok: boolean; error?: string }>;
+
+  // Multi-Source Patching & Built-In Virtual Audio Cables
+  virtualCables: VirtualCableNode[];
+  addVirtualCable: (name?: string, sourceKind?: VirtualCableNode['sourceKind'], sourceId?: string) => VirtualCableNode;
+  updateVirtualCable: (cableId: string, patch: Partial<VirtualCableNode>) => void;
+  removeVirtualCable: (cableId: string) => void;
   attachMicToChannel: (channelId: string, deviceId?: string, label?: string) => Promise<{ ok: boolean; error?: string }>;
   attachDesktopAudioToChannel: (channelId: string) => Promise<{ ok: boolean; error?: string }>;
   attachFileToChannel: (channelId: string, file: File) => Promise<{ ok: boolean; error?: string }>;
   attachToneToChannel: (channelId: string, kind: 'pink' | 'sine1k' | 'sweep', gainDb: number) => Promise<{ ok: boolean; error?: string }>;
+  attachVirtualCableToChannel: (channelId: string, virtualCableId: string) => Promise<{ ok: boolean; error?: string }>;
+  attachExternalTabToVirtualCable: (cableId: string) => Promise<{ ok: boolean; error?: string }>;
+  attachFileToVirtualCable: (cableId: string, file: File) => Promise<{ ok: boolean; error?: string }>;
   toggleChannelFilePlayback: (channelId: string) => boolean;
   detachChannelSource: (channelId: string) => void;
+
+  // Dynamic Channels, EQs, Crossovers, Buses & Outputs
+  addChannel: (name?: string, category?: ChannelStrip['category']) => ChannelStrip;
+  removeChannel: (channelId: string) => void;
+  addChannelEqBand: (channelId: string, preset?: Partial<EqBand>) => void;
+  removeChannelEqBand: (channelId: string, bandId: string) => void;
+  addBus: (name: string, kind?: BusNode['kind']) => BusNode;
+  removeBus: (busId: string) => void;
+  addBusEqBand: (busId: string, preset?: Partial<EqBand>) => void;
+  updateBusEqBand: (busId: string, bandId: string, patch: Partial<EqBand>) => void;
+  removeBusEqBand: (busId: string, bandId: string) => void;
+  addSpeakerOutput: (name?: string, role?: SpeakerBand['role'], sourceBusId?: string) => SpeakerBand;
+  removeSpeakerOutput: (speakerId: string) => void;
+  addSpeakerEqBand: (speakerId: string, preset?: Partial<EqBand>) => void;
+  updateSpeakerEqBand: (speakerId: string, bandId: string, patch: Partial<EqBand>) => void;
+  removeSpeakerEqBand: (speakerId: string, bandId: string) => void;
 
   // Test Tone & Monitoring
   testToneActive: boolean;
@@ -145,12 +188,13 @@ interface AudioConsoleContextValue {
   updateChannel: (channelId: string, patch: Partial<ChannelStrip>, reason?: string) => { ok: boolean; error?: string };
   updateChannelSend: (
     channelId: string,
-    busKey: keyof ChannelStrip['sends'],
-    patch: Partial<ChannelStrip['sends']['mon1']>
+    busKey: string,
+    patch: Partial<ChannelSendConfig>
   ) => void;
   updateBus: (busId: string, patch: Partial<BusNode>, reason?: string) => void;
   updateSpeaker: (speakerId: string, patch: Partial<SpeakerBand>, reason?: string) => void;
   updateVirtualDi: (patch: Partial<VirtualDiState>, reason?: string) => { ok: boolean; error?: string };
+  updateFeedbackIncident: (incidentId: string, patch: Partial<FeedbackIncident>) => void;
   applyFeedbackNotch: (incidentId: string) => void;
   dismissFeedbackIncident: (incidentId: string) => void;
   runSoundCheckItem: (itemId: string, operatorAuthorized?: boolean) => void;
@@ -286,6 +330,8 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const [sourceBayOpen, setSourceBayOpen] = useState<boolean>(false);
   const [sourceBayChannelId, setSourceBayChannelId] = useState<string>('ch-01');
+  const [gainStagingOpen, setGainStagingOpen] = useState<boolean>(false);
+  const [gainStagingChannelId, setGainStagingChannelId] = useState<string | null>(null);
 
   const [profileId, setProfileId] = useState<HardwareProfileId>('auto-detected');
   const [detectedHardware, setDetectedHardware] = useState<DetectedHardwareDevice[]>([]);
@@ -294,6 +340,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const [channels, setChannels] = useState<ChannelStrip[]>(INITIAL_CHANNELS);
   const [buses, setBuses] = useState<BusNode[]>(INITIAL_BUSES);
   const [speakers, setSpeakers] = useState<SpeakerBand[]>(INITIAL_SPEAKERS);
+  const [virtualCables, setVirtualCables] = useState<VirtualCableNode[]>(INITIAL_VIRTUAL_CABLES);
   const [virtualDi, setVirtualDi] = useState<VirtualDiState>(INITIAL_VIRTUAL_DI);
   const [feedbackIncidents, setFeedbackIncidents] = useState<FeedbackIncident[]>(INITIAL_FEEDBACK);
   const [soundCheckItems, setSoundCheckItems] = useState<SoundCheckItem[]>(INITIAL_SOUND_CHECK);
@@ -308,6 +355,11 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
 
   const [audioUnlocked, setAudioUnlocked] = useState<boolean>(false);
   const [xrunsCount, setXrunsCount] = useState<number>(0);
+
+  const [recordingActive, setRecordingActive] = useState<boolean>(false);
+  const [recordingDurationSec, setRecordingDurationSec] = useState<number>(0);
+  const [lastRecordingUrl, setLastRecordingUrl] = useState<string | null>(null);
+  const [lastRecordingFilename, setLastRecordingFilename] = useState<string | null>(null);
 
   const [testToneActive, setTestToneActive] = useState<boolean>(false);
   const [testToneKind, setTestToneKind] = useState<'pink' | 'sine1k' | 'sweep'>('pink');
@@ -343,7 +395,14 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   }, [profileId, detectedHardware]);
 
   const liveMicActive = useMemo(
-    () => channels.some((c) => c.sourceBinding?.active && (c.sourceBinding.kind === 'mic' || c.sourceBinding.kind === 'desktop')),
+    () =>
+      channels.some(
+        (c) =>
+          c.sourceBinding?.active &&
+          (c.sourceBinding.kind === 'mic' ||
+            c.sourceBinding.kind === 'desktop' ||
+            c.sourceBinding.kind === 'virtual-cable')
+      ),
     [channels]
   );
 
@@ -353,6 +412,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     channels,
     buses,
     speakers,
+    virtualCables,
     virtualDi,
     proposals,
     graphVersion,
@@ -366,6 +426,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     channels,
     buses,
     speakers,
+    virtualCables,
     virtualDi,
     proposals,
     graphVersion,
@@ -439,6 +500,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
             if (Array.isArray(data.channels)) setChannels(data.channels);
             if (Array.isArray(data.buses)) setBuses(data.buses);
             if (Array.isArray(data.speakers)) setSpeakers(data.speakers);
+            if (Array.isArray(data.virtualCables) && data.virtualCables.length > 0) {
+              setVirtualCables(data.virtualCables);
+            }
             if (data.virtualDi) setVirtualDi(data.virtualDi);
             if (Array.isArray(data.proposals)) setProposals(data.proposals);
             if (Array.isArray(data.scenes)) setScenes(data.scenes);
@@ -505,6 +569,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
           channels,
           buses,
           speakers,
+          virtualCables,
           virtualDi,
           proposals,
         }),
@@ -517,7 +582,16 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         .finally(() => setDbSyncing(false));
     }, 320);
     return () => window.clearTimeout(handle);
-  }, [dbHydrated, profileId, workspaceTheme, activeSceneId, graphVersion, channels, buses, speakers, virtualDi, proposals]);
+  }, [dbHydrated, profileId, workspaceTheme, activeSceneId, graphVersion, channels, buses, speakers, virtualCables, virtualDi, proposals]);
+
+  // Recording elapsed duration ticker
+  useEffect(() => {
+    if (!recordingActive) return;
+    const t = window.setInterval(() => {
+      setRecordingDurationSec((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [recordingActive]);
 
   // 25 Hz genuine Web Audio AnalyserNode metering + autonomous Dugan/FFT DSP intelligence
   useEffect(() => {
@@ -527,7 +601,9 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         s.channels,
         s.buses,
         s.graphVersion,
-        s.intelligenceConfig
+        s.intelligenceConfig,
+        s.speakers,
+        s.virtualCables
       );
       setMeters(sample.meters);
       setSpectrum(sample.spectrum);
@@ -578,11 +654,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     return () => window.clearInterval(timer);
   }, []);
 
-  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, or Virtual DI change
+  // Sync live Web Audio DSP parameters whenever channels, buses, speakers, virtual cables, or Virtual DI change
   useEffect(() => {
-    const mainBus = buses.find((b) => b.id === 'bus-main');
-    audioEngine.syncChannels(channels, mainBus, virtualDi, speakers);
-  }, [channels, buses, virtualDi, speakers]);
+    audioEngine.syncGraph(channels, buses, virtualDi, speakers, virtualCables);
+  }, [channels, buses, virtualDi, speakers, virtualCables]);
 
   const captureSnapshot = useCallback((): ConsoleSnapshotState => {
     return {
@@ -590,12 +665,13 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       channels,
       buses,
       speakers,
+      virtualCables,
       virtualDi,
       feedbackIncidents,
       soundCheckItems,
       activeSceneId,
     };
-  }, [profileId, channels, buses, speakers, virtualDi, feedbackIncidents, soundCheckItems, activeSceneId]);
+  }, [profileId, channels, buses, speakers, virtualCables, virtualDi, feedbackIncidents, soundCheckItems, activeSceneId]);
 
   const pushUndo = useCallback(() => {
     const snap = captureSnapshot();
@@ -625,6 +701,19 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     setSourceBayOpen(false);
   }, []);
 
+  const openGainStagingAssistant = useCallback((channelId?: string) => {
+    setGainStagingChannelId(channelId ?? null);
+    setGainStagingOpen(true);
+  }, []);
+
+  const closeGainStagingAssistant = useCallback(() => {
+    setGainStagingOpen(false);
+  }, []);
+
+  const resetPeakHold = useCallback((nodeId?: string) => {
+    audioEngine.resetPeakHold(nodeId);
+  }, []);
+
   const toggleAudioEngine = useCallback(async () => {
     if (audioUnlocked) {
       await audioEngine.suspend();
@@ -636,8 +725,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         message: 'Real-time Web Audio DSP output placed in Standby.',
       });
     } else {
-      const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-      const ok = await audioEngine.unlockAndStart(channels, mainBus, speakers);
+      const ok = await audioEngine.unlockAndStart(channels, buses, speakers, virtualCables, virtualDi);
       setAudioUnlocked(ok);
       void scanHardware(false);
       logEvent({
@@ -647,7 +735,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         message: `Real-time Web Audio DSP engine engaged at ${(audioEngine.getAudioClockTelemetry().sampleRateHz / 1000).toFixed(1)} kHz.`,
       });
     }
-  }, [audioUnlocked, buses, channels, speakers, logEvent, scanHardware]);
+  }, [audioUnlocked, buses, channels, speakers, virtualCables, virtualDi, logEvent, scanHardware]);
 
   const updateBindingOnChannel = useCallback((channelId: string, binding: AudioSourceBinding) => {
     setChannels((prev) =>
@@ -667,8 +755,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   const attachMicToChannel = useCallback(
     async (channelId: string, deviceId?: string, label?: string) => {
       try {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        const binding = await audioEngine.attachMicToChannel(channelId, channels, mainBus, deviceId, label);
+        const binding = await audioEngine.attachMicToChannel(
+          channelId,
+          channels,
+          buses,
+          deviceId,
+          label,
+          speakers,
+          virtualCables
+        );
         setAudioUnlocked(audioEngine.isAudioUnlocked());
         updateBindingOnChannel(channelId, binding);
         void scanHardware(false);
@@ -692,27 +787,33 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         return { ok: false, error: msg };
       }
     },
-    [buses, channels, updateBindingOnChannel, scanHardware, logEvent]
+    [buses, channels, speakers, virtualCables, updateBindingOnChannel, scanHardware, logEvent]
   );
 
   const attachDesktopAudioToChannel = useCallback(
     async (channelId: string) => {
       try {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        const binding = await audioEngine.attachDesktopAudioToChannel(channelId, channels, mainBus, () => {
-          updateBindingOnChannel(channelId, {
-            kind: 'none',
-            label: 'Desktop Audio Stopped',
-            active: false,
-          });
-          logEvent({
-            family: 'device',
-            severity: 'warning',
-            service: 'SourcePatchbay',
-            nodeId: channelId,
-            message: `Desktop/System audio capture ended on ${channelId.toUpperCase()}.`,
-          });
-        });
+        const binding = await audioEngine.attachDesktopAudioToChannel(
+          channelId,
+          channels,
+          buses,
+          () => {
+            updateBindingOnChannel(channelId, {
+              kind: 'none',
+              label: 'Browser / System Audio Stopped',
+              active: false,
+            });
+            logEvent({
+              family: 'device',
+              severity: 'warning',
+              service: 'SourcePatchbay',
+              nodeId: channelId,
+              message: `Browser / System audio capture ended on ${channelId.toUpperCase()}.`,
+            });
+          },
+          speakers,
+          virtualCables
+        );
         setAudioUnlocked(audioEngine.isAudioUnlocked());
         updateBindingOnChannel(channelId, binding);
         logEvent({
@@ -720,7 +821,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
           severity: 'info',
           service: 'SourcePatchbay',
           nodeId: channelId,
-          message: `Desktop / System audio "${binding.label}" routed live into ${channelId.toUpperCase()}.`,
+          message: `Browser / System audio "${binding.label}" routed live into ${channelId.toUpperCase()}.`,
         });
         return { ok: true };
       } catch (err) {
@@ -735,14 +836,20 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         return { ok: false, error: msg };
       }
     },
-    [buses, channels, updateBindingOnChannel, logEvent]
+    [buses, channels, speakers, virtualCables, updateBindingOnChannel, logEvent]
   );
 
   const attachFileToChannel = useCallback(
     async (channelId: string, file: File) => {
       try {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        const binding = await audioEngine.attachFileToChannel(channelId, file, channels, mainBus);
+        const binding = await audioEngine.attachFileToChannel(
+          channelId,
+          file,
+          channels,
+          buses,
+          speakers,
+          virtualCables
+        );
         setAudioUnlocked(audioEngine.isAudioUnlocked());
         updateBindingOnChannel(channelId, binding);
         logEvent({
@@ -758,14 +865,21 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         return { ok: false, error: msg };
       }
     },
-    [buses, channels, updateBindingOnChannel, logEvent]
+    [buses, channels, speakers, virtualCables, updateBindingOnChannel, logEvent]
   );
 
   const attachToneToChannel = useCallback(
     async (channelId: string, kind: 'pink' | 'sine1k' | 'sweep', gainDb: number) => {
       try {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        const binding = await audioEngine.attachToneToChannel(channelId, kind, gainDb, channels, mainBus);
+        const binding = await audioEngine.attachToneToChannel(
+          channelId,
+          kind,
+          gainDb,
+          channels,
+          buses,
+          speakers,
+          virtualCables
+        );
         setAudioUnlocked(audioEngine.isAudioUnlocked());
         updateBindingOnChannel(channelId, binding);
         logEvent({
@@ -781,7 +895,218 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         return { ok: false, error: msg };
       }
     },
-    [buses, channels, updateBindingOnChannel, logEvent]
+    [buses, channels, speakers, virtualCables, updateBindingOnChannel, logEvent]
+  );
+
+  const attachVirtualCableToChannel = useCallback(
+    async (channelId: string, virtualCableId: string) => {
+      try {
+        const binding = await audioEngine.attachVirtualCableToChannel(
+          channelId,
+          virtualCableId,
+          channels,
+          buses,
+          speakers,
+          virtualCables
+        );
+        setAudioUnlocked(audioEngine.isAudioUnlocked());
+        updateBindingOnChannel(channelId, binding);
+        logEvent({
+          family: 'graph',
+          severity: 'info',
+          service: 'VirtualAudioCable',
+          nodeId: channelId,
+          message: `Patched ${binding.label} -> ${channelId.toUpperCase()} (built-in internal loopback).`,
+        });
+        return { ok: true };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to attach Virtual Audio Cable.';
+        logEvent({
+          family: 'graph',
+          severity: 'warning',
+          service: 'VirtualAudioCable',
+          nodeId: channelId,
+          message: msg,
+        });
+        return { ok: false, error: msg };
+      }
+    },
+    [channels, buses, speakers, virtualCables, updateBindingOnChannel, logEvent]
+  );
+
+  const attachExternalTabToVirtualCable = useCallback(
+    async (cableId: string) => {
+      try {
+        const label = await audioEngine.attachExternalTabToVirtualCable(
+          cableId,
+          channels,
+          buses,
+          speakers,
+          virtualCables,
+          () => {
+            setVirtualCables((prev) =>
+              prev.map((v) =>
+                v.id === cableId ? { ...v, sourceKind: 'idle', sourceLabel: 'Tab Audio Stopped' } : v
+              )
+            );
+          }
+        );
+        setAudioUnlocked(audioEngine.isAudioUnlocked());
+        setVirtualCables((prev) =>
+          prev.map((v) =>
+            v.id === cableId
+              ? { ...v, sourceKind: 'external-tab', sourceId: undefined, sourceLabel: label, active: true }
+              : v
+          )
+        );
+        setGraphVersion((v) => v + 1);
+        logEvent({
+          family: 'device',
+          severity: 'info',
+          service: 'VirtualAudioCable',
+          message: `Captured external audio "${label}" into Virtual Cable ${cableId.toUpperCase()}.`,
+        });
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : 'External tab audio capture failed.',
+        };
+      }
+    },
+    [channels, buses, speakers, virtualCables, logEvent]
+  );
+
+  const attachFileToVirtualCable = useCallback(
+    async (cableId: string, file: File) => {
+      try {
+        const label = await audioEngine.attachFileToVirtualCable(
+          cableId,
+          file,
+          channels,
+          buses,
+          speakers,
+          virtualCables
+        );
+        setAudioUnlocked(audioEngine.isAudioUnlocked());
+        setVirtualCables((prev) =>
+          prev.map((v) =>
+            v.id === cableId
+              ? { ...v, sourceKind: 'media-deck', sourceId: undefined, sourceLabel: label, active: true }
+              : v
+          )
+        );
+        setGraphVersion((v) => v + 1);
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : 'Media deck attachment failed.',
+        };
+      }
+    },
+    [channels, buses, speakers, virtualCables]
+  );
+
+  const addVirtualCable = useCallback(
+    (name?: string, sourceKind: VirtualCableNode['sourceKind'] = 'idle', sourceId?: string) => {
+      const idx = virtualCables.length + 1;
+      const srcBus = sourceKind === 'bus' ? buses.find((b) => b.id === sourceId) : undefined;
+      const srcCh = sourceKind === 'channel' ? channels.find((c) => c.id === sourceId) : undefined;
+      const created: VirtualCableNode = {
+        id: `vc-${Date.now()}-${idx}`,
+        name: name?.trim() || `VAC ${idx} · Virtual Cable`,
+        sourceKind,
+        sourceId,
+        sourceLabel: srcBus
+          ? srcBus.name
+          : srcCh
+            ? `CH ${String(srcCh.number).padStart(2, '0')} · ${srcCh.name}`
+            : 'Ready for Source / Tab / Bus',
+        gainDb: 0,
+        active: true,
+        monitorToMaster: false,
+      };
+      setVirtualCables((prev) => [...prev, created]);
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'graph',
+        severity: 'info',
+        service: 'VirtualAudioCable',
+        message: `Created internal Virtual Audio Cable "${created.name}".`,
+      });
+      return created;
+    },
+    [virtualCables.length, buses, channels, logEvent]
+  );
+
+  const updateVirtualCable = useCallback((cableId: string, patch: Partial<VirtualCableNode>) => {
+    setVirtualCables((prev) => prev.map((v) => (v.id === cableId ? { ...v, ...patch } : v)));
+    setGraphVersion((v) => v + 1);
+  }, []);
+
+  const removeVirtualCable = useCallback(
+    (cableId: string) => {
+      channels.forEach((ch) => {
+        if (ch.sourceBinding?.kind === 'virtual-cable' && ch.sourceBinding.virtualCableId === cableId) {
+          audioEngine.detachChannelSource(ch.id);
+        }
+      });
+      setChannels((prev) =>
+        prev.map((ch) =>
+          ch.sourceBinding?.kind === 'virtual-cable' && ch.sourceBinding.virtualCableId === cableId
+            ? {
+                ...ch,
+                sourceBinding: { kind: 'none', label: 'Virtual Cable Removed', active: false },
+              }
+            : ch
+        )
+      );
+      setVirtualCables((prev) => prev.filter((v) => v.id !== cableId));
+      setGraphVersion((v) => v + 1);
+    },
+    [channels]
+  );
+
+  const toggleStreamRecording = useCallback(
+    async (busId = 'bus-stream') => {
+      if (recordingActive) {
+        const res = await audioEngine.stopBusRecording();
+        setRecordingActive(false);
+        if (res) {
+          if (lastRecordingUrl) URL.revokeObjectURL(lastRecordingUrl);
+          setLastRecordingUrl(res.blobUrl);
+          setLastRecordingFilename(res.filename);
+          logEvent({
+            family: 'device',
+            severity: 'info',
+            service: 'BroadcastRecorder',
+            nodeId: busId,
+            message: `Saved ${res.durationSec}s live recording (${res.filename}).`,
+          });
+        }
+        return { ok: true };
+      } else {
+        if (!audioEngine.isAudioUnlocked()) {
+          const ok = await audioEngine.unlockAndStart(channels, buses, speakers, virtualCables, virtualDi);
+          setAudioUnlocked(ok);
+        }
+        const started = audioEngine.startBusRecording(busId);
+        if (started.ok) {
+          setRecordingDurationSec(0);
+          setRecordingActive(true);
+          logEvent({
+            family: 'device',
+            severity: 'info',
+            service: 'BroadcastRecorder',
+            nodeId: busId,
+            message: `Started live ${started.mimeType ?? 'audio'} capture on ${busId.toUpperCase()}.`,
+          });
+        }
+        return started;
+      }
+    },
+    [recordingActive, lastRecordingUrl, channels, buses, speakers, virtualCables, virtualDi, logEvent]
   );
 
   const toggleChannelFilePlayback = useCallback((channelId: string): boolean => {
@@ -860,6 +1185,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setChannels(data.channels);
       setBuses(data.buses);
       setSpeakers(data.speakers);
+      if (Array.isArray(data.virtualCables)) setVirtualCables(data.virtualCables);
       setVirtualDi(data.virtualDi);
       setProposals(data.proposals ?? []);
       setScenes(data.scenes);
@@ -878,8 +1204,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setTestToneKind(nextKind);
       setTestToneGainDb(nextGain);
       if (active && !audioEngine.isAudioUnlocked()) {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        void audioEngine.unlockAndStart(channels, mainBus, speakers).then((ok) => {
+        void audioEngine.unlockAndStart(channels, buses, speakers, virtualCables, virtualDi).then((ok) => {
           setAudioUnlocked(ok);
           audioEngine.setTestTone(active, nextKind, nextGain);
         });
@@ -896,7 +1221,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
           : 'Test tone generator disengaged.',
       });
     },
-    [testToneKind, testToneGainDb, buses, channels, speakers, logEvent]
+    [testToneKind, testToneGainDb, buses, channels, speakers, virtualCables, virtualDi, logEvent]
   );
 
   const switchHardwareProfile = useCallback(
@@ -1024,17 +1349,201 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
   }, [channels, pushUndo, logEvent]);
 
   const updateChannelSend = useCallback(
-    (channelId: string, busKey: keyof ChannelStrip['sends'], patch: Partial<ChannelStrip['sends']['mon1']>) => {
+    (channelId: string, busKey: string, patch: Partial<ChannelSendConfig>) => {
+      setChannels((prev) =>
+        prev.map((c) => {
+          if (c.id !== channelId) return c;
+          const prevSend = c.sends[busKey] ?? { levelDb: -12, preFader: false, enabled: false };
+          return {
+            ...c,
+            sends: {
+              ...c.sends,
+              [busKey]: { ...prevSend, ...patch },
+            },
+          };
+        })
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    []
+  );
+
+  const addChannel = useCallback(
+    (name?: string, category: ChannelStrip['category'] = 'media') => {
+      pushUndo();
+      const maxNum = channels.reduce((m, c) => Math.max(m, c.number), 0);
+      const created = createDynamicChannelStrip(maxNum + 1, name || `Input ${maxNum + 1}`, category);
+      setChannels((prev) => [...prev, created]);
+      setSelectedChannelId(created.id);
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'graph',
+        severity: 'info',
+        service: 'ChannelManager',
+        nodeId: created.id,
+        message: `Added dynamic input strip CH ${String(created.number).padStart(2, '0')} (${created.name}).`,
+      });
+      return created;
+    },
+    [channels, pushUndo, logEvent]
+  );
+
+  const removeChannel = useCallback(
+    (channelId: string) => {
+      if (channels.length <= 1) return;
+      pushUndo();
+      audioEngine.detachChannelSource(channelId);
+      setChannels((prev) => {
+        const filtered = prev.filter((c) => c.id !== channelId);
+        if (selectedChannelId === channelId && filtered[0]) {
+          setSelectedChannelId(filtered[0].id);
+        }
+        return filtered;
+      });
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'graph',
+        severity: 'info',
+        service: 'ChannelManager',
+        message: `Removed input channel ${channelId.toUpperCase()} from SignalGraph.`,
+      });
+    },
+    [channels.length, selectedChannelId, pushUndo, logEvent]
+  );
+
+  const addChannelEqBand = useCallback(
+    (channelId: string, preset?: Partial<EqBand>) => {
+      pushUndo();
+      setChannels((prev) =>
+        prev.map((c) => {
+          if (c.id !== channelId) return c;
+          const idx = c.eqBands.length + 1;
+          const newBand: EqBand = {
+            id: `b-${Date.now()}-${idx}`,
+            label: preset?.label ?? `PEQ ${idx}`,
+            enabled: true,
+            shape: preset?.shape ?? 'bell',
+            freqHz: preset?.freqHz ?? 1000,
+            gainDb: preset?.gainDb ?? 0,
+            q: preset?.q ?? 1.4,
+          };
+          return { ...c, eqEnabled: true, eqBands: [...c.eqBands, newBand] };
+        })
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
+  );
+
+  const removeChannelEqBand = useCallback(
+    (channelId: string, bandId: string) => {
+      pushUndo();
       setChannels((prev) =>
         prev.map((c) =>
-          c.id === channelId
-            ? { ...c, sends: { ...c.sends, [busKey]: { ...c.sends[busKey], ...patch } } }
-            : c
+          c.id === channelId ? { ...c, eqBands: c.eqBands.filter((b) => b.id !== bandId) } : c
+        )
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
+  );
+
+  const addBus = useCallback(
+    (name: string, kind: BusNode['kind'] = 'monitor') => {
+      pushUndo();
+      const short = name.trim().toUpperCase().slice(0, 8) || `BUS ${buses.length + 1}`;
+      const created: BusNode = {
+        id: `bus-${Date.now()}`,
+        name: name.trim() || `Aux Bus ${buses.length + 1}`,
+        shortName: short,
+        kind,
+        faderDb: 0,
+        mute: false,
+        solo: false,
+        eqEnabled: true,
+        eqBands: makeDefaultEqBands(),
+        limiterCeilingDb: -1.5,
+        assignedOutputId: null,
+      };
+      setBuses((prev) => [...prev, created]);
+      setSelectedBusId(created.id);
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'graph',
+        severity: 'info',
+        service: 'BusManager',
+        nodeId: created.id,
+        message: `Created dynamic mix bus "${created.name}".`,
+      });
+      return created;
+    },
+    [buses.length, pushUndo, logEvent]
+  );
+
+  const removeBus = useCallback(
+    (busId: string) => {
+      if (busId === 'bus-main') return;
+      pushUndo();
+      setBuses((prev) => prev.filter((b) => b.id !== busId));
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
+  );
+
+  const addBusEqBand = useCallback(
+    (busId: string, preset?: Partial<EqBand>) => {
+      pushUndo();
+      setBuses((prev) =>
+        prev.map((b) => {
+          if (b.id !== busId) return b;
+          const existing = b.eqBands ?? [];
+          const newBand: EqBand = {
+            id: `beq-${Date.now()}-${existing.length + 1}`,
+            label: preset?.label ?? `BUS EQ ${existing.length + 1}`,
+            enabled: true,
+            shape: preset?.shape ?? 'bell',
+            freqHz: preset?.freqHz ?? 800,
+            gainDb: preset?.gainDb ?? 0,
+            q: preset?.q ?? 1.2,
+          };
+          return { ...b, eqEnabled: true, eqBands: [...existing, newBand] };
+        })
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
+  );
+
+  const updateBusEqBand = useCallback(
+    (busId: string, bandId: string, patch: Partial<EqBand>) => {
+      setBuses((prev) =>
+        prev.map((b) =>
+          b.id === busId
+            ? {
+                ...b,
+                eqBands: (b.eqBands ?? []).map((band) =>
+                  band.id === bandId ? { ...band, ...patch } : band
+                ),
+              }
+            : b
         )
       );
       setGraphVersion((v) => v + 1);
     },
     []
+  );
+
+  const removeBusEqBand = useCallback(
+    (busId: string, bandId: string) => {
+      pushUndo();
+      setBuses((prev) =>
+        prev.map((b) =>
+          b.id === busId ? { ...b, eqBands: (b.eqBands ?? []).filter((band) => band.id !== bandId) } : b
+        )
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
   );
 
   const updateBus = useCallback(
@@ -1053,6 +1562,95 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       }
     },
     [pushUndo, logEvent]
+  );
+
+  const addSpeakerOutput = useCallback(
+    (name?: string, role: SpeakerBand['role'] = 'Custom Output', sourceBusId = 'bus-main') => {
+      pushUndo();
+      const created = createDynamicSpeakerOutput(
+        speakers.length + 1,
+        name || `Output ${speakers.length + 1}`,
+        role,
+        sourceBusId
+      );
+      setSpeakers((prev) => [...prev, created]);
+      setGraphVersion((v) => v + 1);
+      logEvent({
+        family: 'graph',
+        severity: 'info',
+        service: 'OutputManager',
+        nodeId: created.id,
+        message: `Added final crossover / output "${created.name}" (${role}) sourced from ${sourceBusId}.`,
+      });
+      return created;
+    },
+    [speakers.length, pushUndo, logEvent]
+  );
+
+  const removeSpeakerOutput = useCallback(
+    (speakerId: string) => {
+      if (speakers.length <= 1) return;
+      pushUndo();
+      setSpeakers((prev) => prev.filter((s) => s.id !== speakerId));
+      setGraphVersion((v) => v + 1);
+    },
+    [speakers.length, pushUndo]
+  );
+
+  const addSpeakerEqBand = useCallback(
+    (speakerId: string, preset?: Partial<EqBand>) => {
+      pushUndo();
+      setSpeakers((prev) =>
+        prev.map((s) => {
+          if (s.id !== speakerId) return s;
+          const existing = s.eqBands ?? [];
+          const newBand: EqBand = {
+            id: `oeq-${Date.now()}-${existing.length + 1}`,
+            label: preset?.label ?? `OUT EQ ${existing.length + 1}`,
+            enabled: true,
+            shape: preset?.shape ?? 'bell',
+            freqHz: preset?.freqHz ?? 500,
+            gainDb: preset?.gainDb ?? 0,
+            q: preset?.q ?? 1.4,
+          };
+          return { ...s, eqEnabled: true, eqBands: [...existing, newBand] };
+        })
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
+  );
+
+  const updateSpeakerEqBand = useCallback(
+    (speakerId: string, bandId: string, patch: Partial<EqBand>) => {
+      setSpeakers((prev) =>
+        prev.map((s) =>
+          s.id === speakerId
+            ? {
+                ...s,
+                eqBands: (s.eqBands ?? []).map((b) => (b.id === bandId ? { ...b, ...patch } : b)),
+              }
+            : s
+        )
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    []
+  );
+
+  const removeSpeakerEqBand = useCallback(
+    (speakerId: string, bandId: string) => {
+      pushUndo();
+      setSpeakers((prev) =>
+        prev.map((s) =>
+          s.id === speakerId
+            ? { ...s, eqBands: (s.eqBands ?? []).filter((b) => b.id !== bandId) }
+            : s
+        )
+      );
+      setGraphVersion((v) => v + 1);
+    },
+    [pushUndo]
   );
 
   const updateSpeaker = useCallback(
@@ -1098,6 +1696,15 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     [pushUndo, logEvent, virtualDi.sourceChannelId]
   );
 
+  const updateFeedbackIncident = useCallback(
+    (incidentId: string, patch: Partial<FeedbackIncident>) => {
+      setFeedbackIncidents((prev) =>
+        prev.map((f) => (f.id === incidentId ? { ...f, ...patch } : f))
+      );
+    },
+    []
+  );
+
   const applyFeedbackNotch = useCallback(
     (incidentId: string) => {
       const incident = feedbackIncidents.find((f) => f.id === incidentId);
@@ -1108,14 +1715,27 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         prev.map((ch) => {
           if (ch.id !== incident.channelId) return ch;
           const bands = [...ch.eqBands];
-          bands[2] = {
-            ...bands[2],
-            enabled: true,
-            shape: 'notch',
-            freqHz: incident.freqHz,
-            gainDb: incident.notchProposedDb,
-            q: 12.0,
-          };
+          const notchIdx = bands.findIndex((b) => Math.abs(b.freqHz - incident.freqHz) < 60);
+          if (notchIdx >= 0) {
+            bands[notchIdx] = {
+              ...bands[notchIdx],
+              enabled: true,
+              shape: 'notch',
+              freqHz: incident.freqHz,
+              gainDb: incident.notchProposedDb,
+              q: incident.qEstimate || 12.0,
+            };
+          } else {
+            bands.push({
+              id: `fb-notch-${Date.now()}`,
+              label: `FB ${incident.freqHz}Hz`,
+              enabled: true,
+              shape: 'notch',
+              freqHz: incident.freqHz,
+              gainDb: incident.notchProposedDb,
+              q: incident.qEstimate || 12.0,
+            });
+          }
           return { ...ch, eqEnabled: true, eqBands: bands };
         })
       );
@@ -1235,24 +1855,32 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
         };
         persistSoundCheck(updated);
       } else if (item.id === 'chk-5') {
-        const mainBus = buses.find((b) => b.id === 'bus-main') ?? buses[0];
-        void audioEngine.unlockAndStart(channels, mainBus, speakers).then((ok) => {
-          setAudioUnlocked(ok);
-          audioEngine.setTestTone(true, 'pink', -24);
-          window.setTimeout(() => {
-            const snap = audioEngine.sampleMeters(stateRef.current.channels, stateRef.current.buses, stateRef.current.graphVersion);
-            const mainOut = snap.meters['bus-main'];
-            audioEngine.setTestTone(false, 'pink', -24);
-            const updated: SoundCheckItem = {
-              ...item,
-              status: mainOut && mainOut.signalPresent ? 'pass' : 'warning',
-              measuredValue: mainOut
-                ? `Live Pink Pulse: ${mainOut.rmsDbfs.toFixed(1)} dBFS RMS / ${mainOut.peakDbfs.toFixed(1)} dBFS Peak`
-                : 'Audio engine inactive',
-            };
-            persistSoundCheck(updated);
-          }, 1200);
-        });
+        void audioEngine
+          .unlockAndStart(channels, buses, speakers, virtualCables, virtualDi)
+          .then((ok) => {
+            setAudioUnlocked(ok);
+            audioEngine.setTestTone(true, 'pink', -24);
+            window.setTimeout(() => {
+              const snap = audioEngine.sampleMeters(
+                stateRef.current.channels,
+                stateRef.current.buses,
+                stateRef.current.graphVersion,
+                stateRef.current.intelligenceConfig,
+                stateRef.current.speakers,
+                stateRef.current.virtualCables
+              );
+              const mainOut = snap.meters['bus-main'];
+              audioEngine.setTestTone(false, 'pink', -24);
+              const updated: SoundCheckItem = {
+                ...item,
+                status: mainOut && mainOut.signalPresent ? 'pass' : 'warning',
+                measuredValue: mainOut
+                  ? `Live Pink Pulse: ${mainOut.rmsDbfs.toFixed(1)} dBFS RMS / ${mainOut.peakDbfs.toFixed(1)} dBFS Peak`
+                  : 'Audio engine inactive',
+              };
+              persistSoundCheck(updated);
+            }, 1200);
+          });
       }
 
       logEvent({
@@ -1457,6 +2085,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setChannels(last.channels);
       setBuses(last.buses);
       setSpeakers(last.speakers);
+      setVirtualCables(last.virtualCables);
       setVirtualDi(last.virtualDi);
       setFeedbackIncidents(last.feedbackIncidents);
       setSoundCheckItems(last.soundCheckItems);
@@ -1481,6 +2110,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
       setChannels(next.channels);
       setBuses(next.buses);
       setSpeakers(next.speakers);
+      setVirtualCables(next.virtualCables);
       setVirtualDi(next.virtualDi);
       setFeedbackIncidents(next.feedbackIncidents);
       setSoundCheckItems(next.soundCheckItems);
@@ -1723,6 +2353,10 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     sourceBayChannelId,
     openSourceBay,
     closeSourceBay,
+    gainStagingOpen,
+    gainStagingChannelId,
+    openGainStagingAssistant,
+    closeGainStagingAssistant,
     hardwareProfile,
     switchHardwareProfile,
     detectedHardware,
@@ -1743,12 +2377,39 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     bufferLatencyMs,
     xrunsCount,
     resetXruns: () => setXrunsCount(0),
+    resetPeakHold,
+    recordingActive,
+    recordingDurationSec,
+    lastRecordingUrl,
+    lastRecordingFilename,
+    toggleStreamRecording,
+    virtualCables,
+    addVirtualCable,
+    updateVirtualCable,
+    removeVirtualCable,
     attachMicToChannel,
     attachDesktopAudioToChannel,
     attachFileToChannel,
     attachToneToChannel,
+    attachVirtualCableToChannel,
+    attachExternalTabToVirtualCable,
+    attachFileToVirtualCable,
     toggleChannelFilePlayback,
     detachChannelSource,
+    addChannel,
+    removeChannel,
+    addChannelEqBand,
+    removeChannelEqBand,
+    addBus,
+    removeBus,
+    addBusEqBand,
+    updateBusEqBand,
+    removeBusEqBand,
+    addSpeakerOutput,
+    removeSpeakerOutput,
+    addSpeakerEqBand,
+    updateSpeakerEqBand,
+    removeSpeakerEqBand,
     testToneActive,
     testToneKind,
     testToneGainDb,
@@ -1783,6 +2444,7 @@ export function UnifiedAudioEngineProvider({ children }: { children: React.React
     updateBus,
     updateSpeaker,
     updateVirtualDi,
+    updateFeedbackIncident,
     applyFeedbackNotch,
     dismissFeedbackIncident,
     runSoundCheckItem,

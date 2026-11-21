@@ -3,12 +3,18 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Gauge,
   GitBranch,
   Lock,
+  Maximize2,
+  Minimize2,
+  Plus,
   Radio,
+  RotateCcw,
   SlidersHorizontal,
   Sparkles,
   Speaker,
+  Trash2,
   Waves,
 } from 'lucide-react';
 import { useAudioConsole } from '../../engine/store';
@@ -24,7 +30,7 @@ import { ConsoleButton } from '../hardware/ConsoleButton';
 import { ScribbleStrip } from '../hardware/ScribbleStrip';
 import { GraphicEq31Band } from '../hardware/GraphicEq31Band';
 import { HorizontalSlider } from '../hardware/HorizontalSlider';
-import type { ChannelStrip, CrossoverFamily } from '../../engine/types';
+import type { ChannelStrip, CrossoverFamily, SourceCategory } from '../../engine/types';
 
 const SPK_COLORS = ['#a78bfa', '#f59e0b', '#38bdf8', '#10b981', '#f43f5e'];
 
@@ -102,8 +108,12 @@ export const LiveSoundConsole: React.FC = () => {
     updateChannelSend,
     updateBus,
     updateSpeaker,
+    addChannel,
+    removeChannel,
+    resetPeakHold,
     openSignalJourney,
     openSourceBay,
+    openGainStagingAssistant,
     intelligenceConfig,
     setIntelligenceConfig,
     systemIntelligence,
@@ -112,7 +122,13 @@ export const LiveSoundConsole: React.FC = () => {
 
   const [consoleModule, setConsoleModule] = useState<'desk' | 'eq31' | 'crossover' | 'dynamics'>('desk');
   const [focusTab, setFocusTab] = useState<'eq' | 'crossover' | 'preamp'>('eq');
-  const [bankFilter, setBankFilter] = useState<'page1' | 'page2' | 'vox' | 'band' | 'drums-choir'>('page1');
+  const [bankFilter, setBankFilter] = useState<'all' | 'vox' | 'band' | 'drums-choir'>('all');
+  const [bankPageIdx, setBankPageIdx] = useState<number>(0);
+  const [expandedStripIds, setExpandedStripIds] = useState<Record<string, boolean>>({});
+  const [expandAllStrips, setExpandAllStrips] = useState<boolean>(false);
+  const [addInputOpen, setAddInputOpen] = useState<boolean>(false);
+  const [newInputName, setNewInputName] = useState<string>('');
+  const [newInputCat, setNewInputCat] = useState<SourceCategory>('media');
   const [sendMode, setSendMode] = useState<'mix' | 'mon1' | 'mon2' | 'livestream'>('mix');
   const [secondChannelId, setSecondChannelId] = useState<string>(channels[1]?.id ?? channels[0].id);
   const [selectedSpkId, setSelectedSpkId] = useState<string>(speakers[0]?.id ?? 'spk-sub');
@@ -125,10 +141,15 @@ export const LiveSoundConsole: React.FC = () => {
   const isManualPreamp = primaryCaps?.preampGain === 'manual';
   const isManualPhantom = primaryCaps?.phantomPower === 'manual';
 
-  // Paged 6-strip channel view so zero horizontal scrolling is needed
+  const totalPages = Math.max(1, Math.ceil(channels.length / 6));
+  const safePageIdx = Math.min(bankPageIdx, totalPages - 1);
+
+  // Dynamic 6-strip paged channel view supporting unlimited channels
   const visibleChannels = useMemo(() => {
-    if (bankFilter === 'page1') return channels.slice(0, 6);
-    if (bankFilter === 'page2') return channels.slice(6, 12);
+    if (bankFilter === 'all') {
+      const start = safePageIdx * 6;
+      return channels.slice(start, start + 6);
+    }
     if (bankFilter === 'vox')
       return channels.filter((ch) => ch.category === 'pulpit' || ch.category === 'vocal').slice(0, 6);
     if (bankFilter === 'band')
@@ -144,7 +165,35 @@ export const LiveSoundConsole: React.FC = () => {
     return channels
       .filter((ch) => ch.category === 'drums' || ch.category === 'choir' || ch.category === 'media')
       .slice(0, 6);
-  }, [channels, bankFilter]);
+  }, [channels, bankFilter, safePageIdx]);
+
+  const toggleStripExpanded = (channelId: string) => {
+    setExpandedStripIds((prev) => ({
+      ...prev,
+      [channelId]: !(prev[channelId] ?? expandAllStrips),
+    }));
+  };
+
+  const toggleAllExpanded = () => {
+    const next = !expandAllStrips;
+    setExpandAllStrips(next);
+    const map: Record<string, boolean> = {};
+    channels.forEach((c) => {
+      map[c.id] = next;
+    });
+    setExpandedStripIds(map);
+  };
+
+  const handleCreateInputChannel = (e: React.FormEvent) => {
+    e.preventDefault();
+    const created = addChannel(newInputName.trim() || undefined, newInputCat);
+    setNewInputName('');
+    setAddInputOpen(false);
+    setBankFilter('all');
+    const newPage = Math.floor(channels.length / 6);
+    setBankPageIdx(newPage);
+    setSelectedChannelId(created.id);
+  };
 
   const selectedIndex = Math.max(0, channels.findIndex((c) => c.id === selectedChannelId));
   const selectedChannel = channels[selectedIndex] ?? channels[0];
@@ -304,8 +353,10 @@ export const LiveSoundConsole: React.FC = () => {
 
   const selectChannelWithBank = (id: string) => {
     const idx = channels.findIndex((c) => c.id === id);
-    if (idx >= 0 && idx < 6 && bankFilter === 'page2') setBankFilter('page1');
-    if (idx >= 6 && bankFilter === 'page1') setBankFilter('page2');
+    if (idx >= 0) {
+      setBankFilter('all');
+      setBankPageIdx(Math.floor(idx / 6));
+    }
     setSelectedChannelId(id);
   };
 
@@ -339,14 +390,32 @@ export const LiveSoundConsole: React.FC = () => {
           })}
         </div>
 
-        {/* Channel Bank Pages (6 Strips / Page — No Sideways Scroll) */}
-        <div className="flex items-center gap-1">
+        {/* Dynamic Channel Bank Pages (6 Strips / Page — Unlimited Channels) */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {Array.from({ length: totalPages }).map((_, pIdx) => {
+            const startNum = pIdx * 6 + 1;
+            const endNum = Math.min(channels.length, (pIdx + 1) * 6);
+            const active = bankFilter === 'all' && safePageIdx === pIdx;
+            return (
+              <button
+                key={`bank-${pIdx}`}
+                type="button"
+                onClick={() => {
+                  setBankFilter('all');
+                  setBankPageIdx(pIdx);
+                }}
+                className={`px-2 py-1 rounded text-[10px] font-mono whitespace-nowrap transition-colors ${
+                  active ? 'console-accent-solid' : 'console-btn-surface text-slate-300'
+                }`}
+              >
+                CH {startNum}–{endNum}
+              </button>
+            );
+          })}
           {[
-            { id: 'page1', label: 'CH 1–6' },
-            { id: 'page2', label: 'CH 7–12' },
             { id: 'vox', label: 'VOX' },
             { id: 'band', label: 'BAND' },
-            { id: 'drums-choir', label: 'DRUMS/CHOIR' },
+            { id: 'drums-choir', label: 'DRUMS/MEDIA' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -361,6 +430,15 @@ export const LiveSoundConsole: React.FC = () => {
               {tab.label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => setAddInputOpen((v) => !v)}
+            className="px-2 py-1 rounded bg-emerald-500/20 border border-emerald-400/50 text-[10px] font-mono text-emerald-200 flex items-center gap-1 whitespace-nowrap"
+            title="Add new separate input channel"
+          >
+            <Plus className="w-3 h-3" />
+            <span>ADD IN</span>
+          </button>
         </div>
 
         {/* Sends-On-Fader + DSP IQ Autopilot */}
@@ -426,6 +504,54 @@ export const LiveSoundConsole: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {addInputOpen && (
+        <form
+          onSubmit={handleCreateInputChannel}
+          className="console-panel rounded-md px-3 py-2 border border-emerald-500/40 flex flex-wrap items-center justify-between gap-2 shrink-0"
+        >
+          <span className="text-[11px] font-mono font-semibold text-emerald-300">
+            NEW SEPARATE INPUT STRIP (CH {String(channels.length + 1).padStart(2, '0')}):
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={newInputName}
+              onChange={(e) => setNewInputName(e.target.value)}
+              placeholder="Source name (e.g., Browser Tab Audio, Pulpit 2, Media)"
+              className="console-well border border-white/15 rounded px-2.5 py-1 text-xs font-mono text-slate-100 w-64"
+            />
+            <select
+              value={newInputCat}
+              onChange={(e) => setNewInputCat(e.target.value as SourceCategory)}
+              className="console-btn-surface rounded px-2 py-1 text-[11px] font-mono text-slate-200"
+            >
+              <option value="media">Media / Browser</option>
+              <option value="vocal">Vocal</option>
+              <option value="pulpit">Pulpit</option>
+              <option value="acoustic">Acoustic</option>
+              <option value="electric">Electric</option>
+              <option value="bass">Bass</option>
+              <option value="keys">Keys</option>
+              <option value="drums">Drums</option>
+              <option value="choir">Choir</option>
+            </select>
+            <button
+              type="submit"
+              className="px-3 py-1 rounded bg-emerald-500 text-slate-950 text-[11px] font-mono font-bold"
+            >
+              CREATE STRIP
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddInputOpen(false)}
+              className="px-2 py-1 rounded console-btn-surface text-[11px] font-mono text-slate-300"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       {hardwareNotice && (
         <div className="px-3 py-1.5 rounded bg-amber-500/15 border border-amber-500/40 text-[11px] text-amber-200 flex items-center gap-2 shrink-0">
@@ -727,9 +853,9 @@ export const LiveSoundConsole: React.FC = () => {
                   </button>
                 </div>
 
-                {/* 1st / 2nd / 3rd Crossover Output Channel Selector Buttons */}
-                <div className="grid grid-cols-3 gap-1">
-                  {speakers.slice(0, 3).map((spk, idx) => {
+                {/* Dynamic Crossover Output Channel Selector Buttons */}
+                <div className="grid grid-cols-3 gap-1 max-h-14 overflow-y-auto">
+                  {speakers.map((spk, idx) => {
                     const active = spk.id === selectedSpk.id;
                     return (
                       <button
@@ -740,7 +866,7 @@ export const LiveSoundConsole: React.FC = () => {
                           active ? 'console-accent-active font-bold' : 'console-btn-surface text-slate-300'
                         }`}
                       >
-                        CH {idx + 1} · {spk.role === 'Subwoofer' ? 'SUB' : spk.id === 'spk-main-l' ? 'MAIN L' : 'MAIN R'}
+                        OUT {idx + 1} · {spk.role === 'Subwoofer' ? 'SUB' : spk.name}
                       </button>
                     );
                   })}
@@ -999,16 +1125,29 @@ export const LiveSoundConsole: React.FC = () => {
             )}
           </div>
 
-          {/* CENTER BAY: 6-Strip No-Scroll Motorized Fader Bank */}
+          {/* CENTER BAY: 6-Strip Expandable Motorized Fader Bank */}
           <div className="xl:col-span-5 2xl:col-span-6 console-chassis rounded-lg border p-2.5 flex flex-col justify-between min-h-0 overflow-hidden">
-            <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-white/[0.07] shrink-0">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-white/[0.07] shrink-0">
               <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
-                Fader Bank ({bankFilter === 'page1' ? 'CH 1–6' : bankFilter === 'page2' ? 'CH 7–12' : bankFilter.toUpperCase()})
+                Fader Bank ({bankFilter === 'all' ? `CH ${safePageIdx * 6 + 1}–${Math.min(channels.length, (safePageIdx + 1) * 6)}` : bankFilter.toUpperCase()}) · {channels.length} IN
               </span>
-              <span className="text-[10px] font-mono text-slate-300">
-                1ST: <strong className="text-amber-300">CH {selectedChannel.number}</strong> · 2ND:{' '}
-                <strong className="text-sky-300">CH {partnerChannel.number}</strong>
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleAllExpanded}
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono border flex items-center gap-1 ${
+                    expandAllStrips ? 'console-accent-active' : 'console-btn-surface text-slate-300'
+                  }`}
+                  title="Toggle detailed fader view (Gain Reduction History + Peak Hold)"
+                >
+                  {expandAllStrips ? <Minimize2 className="w-2.5 h-2.5" /> : <Maximize2 className="w-2.5 h-2.5" />}
+                  <span>{expandAllStrips ? 'COMPACT SLOTS' : 'EXPAND ALL'}</span>
+                </button>
+                <span className="text-[10px] font-mono text-slate-300">
+                  1ST: <strong className="text-amber-300">CH {selectedChannel.number}</strong> · 2ND:{' '}
+                  <strong className="text-sky-300">CH {partnerChannel.number}</strong>
+                </span>
+              </div>
             </div>
 
             <div className="flex-1 min-h-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 pt-2">
@@ -1016,6 +1155,12 @@ export const LiveSoundConsole: React.FC = () => {
                 const m = meters[ch.id];
                 const isSelected = ch.id === selectedChannel.id;
                 const isSecond = ch.id === partnerChannel.id;
+                const isExpanded = expandedStripIds[ch.id] ?? expandAllStrips;
+                const grHistory = m?.gainReductionHistory ?? [];
+                const peakHold = m?.peakHoldDbfs ?? -80;
+                const peakHoldClipped = Boolean(m?.peakHoldClipped);
+                const maxGrDb = grHistory.length > 0 ? Math.max(...grHistory) : (m?.gainReductionDb ?? 0);
+
                 const faderVal =
                   sendMode === 'mix'
                     ? ch.faderDb
@@ -1033,11 +1178,25 @@ export const LiveSoundConsole: React.FC = () => {
                   }
                 };
 
+                const grSparkPath = (() => {
+                  const pts = grHistory.length > 1 ? grHistory : [0, 0];
+                  const w = 96;
+                  const h = 24;
+                  return pts
+                    .map((val, idx) => {
+                      const x = (idx / Math.max(1, pts.length - 1)) * w;
+                      const norm = Math.max(0, Math.min(1, val / 18));
+                      const y = norm * (h - 3) + 1.5;
+                      return `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+                    })
+                    .join(' ');
+                })();
+
                 return (
                   <div
                     key={ch.id}
                     onClick={() => setSelectedChannelId(ch.id)}
-                    className={`rounded-md p-1.5 flex flex-col items-center justify-between gap-1.5 border transition-all cursor-pointer min-w-0 ${
+                    className={`rounded-md p-1.5 flex flex-col items-center justify-between gap-1 border transition-all cursor-pointer min-w-0 ${
                       isSelected
                         ? 'console-selected-strip'
                         : isSecond
@@ -1049,7 +1208,7 @@ export const LiveSoundConsole: React.FC = () => {
                       <div className="w-full console-well rounded px-1.5 py-0.5 flex items-center justify-between text-[8px] font-mono">
                         <span
                           className={`w-1.5 h-1.5 rounded-full ${
-                            m?.clipping
+                            m?.clipping || peakHoldClipped
                               ? 'bg-rose-500 shadow-[0_0_6px_#f43f5e]'
                               : m?.signalPresent
                                 ? 'bg-emerald-400 shadow-[0_0_6px_#34d399]'
@@ -1057,8 +1216,21 @@ export const LiveSoundConsole: React.FC = () => {
                           }`}
                         />
                         <span className="tabular-nums text-slate-300">
-                          {m?.signalPresent ? `${m.rmsDbfs.toFixed(0)}dB` : '-80'}
+                          {m?.signalPresent ? `${m.rmsDbfs.toFixed(0)}dB` : 'IDLE'}
                         </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStripExpanded(ch.id);
+                          }}
+                          title={isExpanded ? 'Compact fader slot' : 'Expand detail: Gain Reduction history & Peak Hold'}
+                          className={`p-0.5 rounded transition-colors ${
+                            isExpanded ? 'text-amber-300 bg-amber-500/20' : 'text-slate-400 hover:text-slate-100'
+                          }`}
+                        >
+                          {isExpanded ? <Minimize2 className="w-2.5 h-2.5" /> : <Maximize2 className="w-2.5 h-2.5" />}
+                        </button>
                       </div>
 
                       <ScribbleStrip
@@ -1069,56 +1241,144 @@ export const LiveSoundConsole: React.FC = () => {
                         isManualHardwarePreamp={isManualPreamp}
                       />
 
-                      <div className="grid grid-cols-2 gap-1">
-                        <ConsoleButton
-                          label={isSelected ? '1ST' : 'SEL'}
-                          size="xs"
-                          color="amber"
-                          active={isSelected}
-                          onClick={() => setSelectedChannelId(ch.id)}
-                        />
-                        <ConsoleButton
-                          label="2ND"
-                          size="xs"
-                          color="cyan"
-                          active={isSecond}
-                          onClick={() => setSecondChannelId(ch.id)}
-                        />
-                      </div>
+                      {!isExpanded ? (
+                        <>
+                          <div className="grid grid-cols-2 gap-1">
+                            <ConsoleButton
+                              label={isSelected ? '1ST' : 'SEL'}
+                              size="xs"
+                              color="amber"
+                              active={isSelected}
+                              onClick={() => setSelectedChannelId(ch.id)}
+                            />
+                            <ConsoleButton
+                              label="2ND"
+                              size="xs"
+                              color="cyan"
+                              active={isSecond}
+                              onClick={() => setSecondChannelId(ch.id)}
+                            />
+                          </div>
 
-                      <div className="grid grid-cols-2 gap-1">
-                        <ConsoleButton
-                          label="SOLO"
-                          size="xs"
-                          color="cyan"
-                          active={ch.solo}
-                          onClick={() => updateChannel(ch.id, { solo: !ch.solo })}
-                        />
-                        <ConsoleButton
-                          label="MUTE"
-                          size="xs"
-                          color="crimson"
-                          active={ch.mute}
-                          onClick={() => updateChannel(ch.id, { mute: !ch.mute })}
-                        />
-                      </div>
+                          <div className="grid grid-cols-2 gap-1">
+                            <ConsoleButton
+                              label="SOLO"
+                              size="xs"
+                              color="cyan"
+                              active={ch.solo}
+                              onClick={() => updateChannel(ch.id, { solo: !ch.solo })}
+                            />
+                            <ConsoleButton
+                              label="MUTE"
+                              size="xs"
+                              color="crimson"
+                              active={ch.mute}
+                              onClick={() => updateChannel(ch.id, { mute: !ch.mute })}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        /* Expanded Detailed View: Peak Hold Indicator + Gain Reduction History */
+                        <div
+                          onClick={(e) => e.stopPropagation()}
+                          className="console-well rounded p-1.5 space-y-1 border border-amber-500/30"
+                        >
+                          {/* Peak Hold Indicator Row */}
+                          <div className="flex items-center justify-between text-[8px] font-mono">
+                            <span className="text-slate-400">PK HOLD</span>
+                            <span
+                              className={`font-bold tabular-nums ${
+                                peakHoldClipped
+                                  ? 'text-rose-400'
+                                  : peakHold > -6
+                                    ? 'text-amber-300'
+                                    : 'text-emerald-300'
+                              }`}
+                            >
+                              {peakHold <= -78 ? '—' : `${peakHold.toFixed(1)}`}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => resetPeakHold(ch.id)}
+                              title="Reset Peak Hold & Clip Latch"
+                              className="text-sky-400 hover:text-sky-200 p-0.5"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+
+                          {peakHoldClipped && (
+                            <div className="w-full py-0.5 rounded bg-rose-500/25 border border-rose-500/60 text-center text-[7.5px] font-mono font-bold text-rose-200">
+                              CLIP LATCHED
+                            </div>
+                          )}
+
+                          {/* Gain Reduction History Sparkline */}
+                          <div className="space-y-0.5">
+                            <div className="flex items-center justify-between text-[7.5px] font-mono">
+                              <span className="text-slate-400">GR HIST</span>
+                              <span className="text-amber-300 tabular-nums">
+                                -{(m?.gainReductionDb ?? 0).toFixed(1)} (pk -{maxGrDb.toFixed(1)})
+                              </span>
+                            </div>
+                            <div className="dark-instrument-scope rounded px-0.5 py-0.5">
+                              <svg viewBox="0 0 96 24" className="w-full h-5">
+                                <line x1="0" y1="1.5" x2="96" y2="1.5" stroke="rgba(148,163,184,0.22)" strokeWidth="0.6" />
+                                <line x1="0" y1="12" x2="96" y2="12" stroke="rgba(148,163,184,0.12)" strokeWidth="0.6" strokeDasharray="2 2" />
+                                <path d={grSparkPath} fill="none" stroke="#f59e0b" strokeWidth="1.4" />
+                              </svg>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openGainStagingAssistant(ch.id)}
+                              className="py-0.5 rounded bg-amber-500/15 border border-amber-400/40 text-[7.5px] font-mono text-amber-200 flex items-center justify-center gap-0.5"
+                              title="Gain Staging Assistant"
+                            >
+                              <Gauge className="w-2.5 h-2.5" />
+                              <span>STAGE</span>
+                            </button>
+                            {channels.length > 1 ? (
+                              <button
+                                type="button"
+                                onClick={() => removeChannel(ch.id)}
+                                className="py-0.5 rounded bg-rose-500/15 border border-rose-500/40 text-[7.5px] font-mono text-rose-300 flex items-center justify-center gap-0.5"
+                                title="Remove input strip"
+                              >
+                                <Trash2 className="w-2.5 h-2.5" />
+                                <span>DEL</span>
+                              </button>
+                            ) : (
+                              <ConsoleButton
+                                label="MUTE"
+                                size="xs"
+                                color="crimson"
+                                active={ch.mute}
+                                onClick={() => updateChannel(ch.id, { mute: !ch.mute })}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex items-start justify-center gap-1 pt-0.5">
                       <MotorizedFader
                         valueDb={faderVal}
                         onChange={handleFaderChange}
-                        height={158}
+                        height={isExpanded ? 116 : 158}
                         accentColor={sendMode === 'mix' ? 'amber' : 'cyan'}
                       />
                       <LedMeter
                         peakDbfs={m?.peakDbfs ?? -80}
-                        peakHoldDbfs={m?.peakHoldDbfs ?? -80}
+                        peakHoldDbfs={peakHold}
                         gainReductionDb={m?.gainReductionDb ?? 0}
-                        clipping={m?.clipping}
-                        height={158}
+                        clipping={m?.clipping || peakHoldClipped}
+                        height={isExpanded ? 116 : 158}
                         width={8}
-                        segments={16}
+                        segments={isExpanded ? 12 : 16}
                       />
                     </div>
                   </div>

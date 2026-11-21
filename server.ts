@@ -22,6 +22,7 @@ import {
   INITIAL_SCENES,
   INITIAL_SOUND_CHECK,
   INITIAL_SPEAKERS,
+  INITIAL_VIRTUAL_CABLES,
   INITIAL_VIRTUAL_DI,
 } from './src/engine/profiles.ts';
 import type {
@@ -61,6 +62,7 @@ const FACTORY_DEFAULTS = {
   channels: INITIAL_CHANNELS,
   buses: INITIAL_BUSES,
   speakers: INITIAL_SPEAKERS,
+  virtualCables: INITIAL_VIRTUAL_CABLES,
   virtualDi: INITIAL_VIRTUAL_DI,
   scenes: INITIAL_SCENES,
   soundCheckItems: INITIAL_SOUND_CHECK,
@@ -193,6 +195,7 @@ async function startServer() {
         channels: body.channels,
         buses: body.buses,
         speakers: body.speakers,
+        virtualCables: Array.isArray(body.virtualCables) ? body.virtualCables : INITIAL_VIRTUAL_CABLES,
         virtualDi: body.virtualDi,
         proposals: Array.isArray(body.proposals) ? body.proposals : [],
       });

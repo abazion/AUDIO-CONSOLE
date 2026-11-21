@@ -32,9 +32,10 @@ export const MicIntelligenceWorkspace: React.FC = () => {
     feedbackIncidents,
   } = useAudioConsole();
 
-  const micChannels = channels.filter(
+  const rawMics = channels.filter(
     (c) => c.category === 'pulpit' || c.category === 'vocal' || c.category === 'choir' || c.category === 'drums'
   );
+  const micChannels = rawMics.length > 0 ? rawMics : channels;
 
   const activeMic = micChannels.find((c) => c.id === selectedChannelId) ?? micChannels[0];
   const activeMeter = meters[activeMic.id];
@@ -168,8 +169,12 @@ export const MicIntelligenceWorkspace: React.FC = () => {
                   CONGREGATION / FOH MIX POSITION
                 </text>
 
-                {micChannels.map((ch) => {
-                  const pos = STAGE_COORDS[ch.id] ?? { x: 280, y: 100, zone: 'Stage' };
+                {micChannels.map((ch, idx) => {
+                  const pos = STAGE_COORDS[ch.id] ?? {
+                    x: 115 + ((idx * 68) % 330),
+                    y: 78 + ((idx * 19) % 44),
+                    zone: ch.shortName,
+                  };
                   const m = meters[ch.id];
                   const hasRisk = feedbackIncidents.some(
                     (f) => f.channelId === ch.id && f.status !== 'dismissed' && f.status !== 'suppression_applied_verified'
@@ -296,23 +301,26 @@ export const MicIntelligenceWorkspace: React.FC = () => {
                   }}
                 />
                 <div className="oled-display rounded p-2 space-y-1 text-[10px] font-mono">
-                  {activeMic.wirelessTelemetry ? (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400">RF SIGNAL</span>
-                        <span className="text-sky-300">{activeMic.wirelessTelemetry.rfDbm} dBm</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400">BATTERY</span>
-                        <span className="text-emerald-300">{activeMic.wirelessTelemetry.batteryPct}%</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex items-center justify-between text-slate-400">
-                      <span>WIRED XLR LINE</span>
-                      <span className="text-emerald-400">LOW-Z BALANCED</span>
-                    </div>
-                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">INPUT STATE</span>
+                    <span className={activeMic.sourceBinding?.active ? 'text-emerald-400' : 'text-slate-500'}>
+                      {activeMic.sourceBinding?.active
+                        ? `LIVE (${((activeMic.sourceBinding.sampleRateHz ?? 48000) / 1000).toFixed(1)}kHz)`
+                        : 'UNPATCHED'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">PEAK HOLD</span>
+                    <span className="text-sky-300 tabular-nums">
+                      {(activeMeter?.peakHoldDbfs ?? -80).toFixed(1)} dBFS
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">NOISE FLOOR</span>
+                    <span className="text-amber-300 tabular-nums">
+                      {(activeMeter?.noiseFloorDbfs ?? -80).toFixed(1)} dBFS
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

@@ -11,6 +11,7 @@ import {
   Palette,
   Sun,
   Moon,
+  Gauge,
 } from 'lucide-react';
 import { useAudioConsole, WORKSPACE_GROUPS } from '../../engine/store';
 import type { ConsoleThemeId, HardwareProfileId, OperatingMode } from '../../engine/types';
@@ -50,6 +51,7 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
     openSignalJourney,
     selectedChannelId,
     openSourceBay,
+    openGainStagingAssistant,
     detectedHardware,
     channels,
   } = useAudioConsole();
@@ -121,6 +123,16 @@ export const MasterSystemBar: React.FC<MasterSystemBarProps> = ({ onOpenSearch }
           >
             <Radio className="w-3.5 h-3.5" />
             <span>Sources ({activeSourcesCount})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => openGainStagingAssistant(selectedChannelId)}
+            className="px-2.5 py-1.5 rounded console-btn-surface border-amber-500/40 hover:border-amber-400 text-xs text-amber-300 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            title="Open Gain Staging Assistant (Noise Floor, Nominal Sweet Spot & Clipping)"
+          >
+            <Gauge className="w-3.5 h-3.5" />
+            <span>Gain Assist</span>
           </button>
 
           <button

@@ -19,7 +19,7 @@ export const InstrumentIntelligenceWorkspace: React.FC = () => {
     openSignalJourney,
   } = useAudioConsole();
 
-  const instrumentChannels = channels.filter(
+  const rawInstruments = channels.filter(
     (c) =>
       c.category === 'acoustic' ||
       c.category === 'electric' ||
@@ -27,12 +27,14 @@ export const InstrumentIntelligenceWorkspace: React.FC = () => {
       c.category === 'keys' ||
       c.category === 'drums'
   );
+  const instrumentChannels = rawInstruments.length > 0 ? rawInstruments : channels;
 
   const activeInst =
     instrumentChannels.find((c) => c.id === selectedChannelId) ?? instrumentChannels[0];
   const activeMeter = meters[activeInst.id];
   const [instTab, setInstTab] = useState<'analyzer' | 'strips'>('analyzer');
-  const crestDb = Math.max(2, (activeMeter?.peakDbfs ?? -20) - (activeMeter?.rmsDbfs ?? -28));
+  const crestDb = activeMeter?.crestFactorDb ?? 0;
+  const liveFundamentalHz = activeMeter?.signalPresent ? activeMeter.fundamentalHz : 0;
 
   const pitchNoteFromHz = (hz: number) => {
     const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -108,11 +110,11 @@ export const InstrumentIntelligenceWorkspace: React.FC = () => {
               <div className="col-span-12 sm:col-span-4 console-panel rounded p-2.5 flex sm:flex-col items-center justify-around gap-2 h-full">
                 <div className="oled-display rounded px-3 py-2 w-full text-center">
                   <div className="text-[9px] font-mono text-slate-400">FUNDAMENTAL</div>
-                  <div className="text-lg font-mono font-bold text-sky-300">
-                    {activeInst.synthFreqHz.toFixed(0)} Hz
+                  <div className="text-lg font-mono font-bold text-sky-300 tabular-nums">
+                    {liveFundamentalHz > 0 ? `${liveFundamentalHz.toFixed(0)} Hz` : 'IDLE'}
                   </div>
                   <div className="text-[10px] font-mono text-amber-300">
-                    NOTE: {pitchNoteFromHz(activeInst.synthFreqHz)}
+                    NOTE: {liveFundamentalHz > 0 ? pitchNoteFromHz(liveFundamentalHz) : '—'}
                   </div>
                 </div>
                 <ArcGauge
@@ -281,7 +283,7 @@ export const InstrumentIntelligenceWorkspace: React.FC = () => {
       )}
 
       {instTab === 'strips' && (
-        <div className="flex-1 min-h-0 console-chassis rounded-lg border p-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 overflow-hidden">
+        <div className="flex-1 min-h-0 console-chassis rounded-lg border p-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 overflow-y-auto content-start">
           {instrumentChannels.map((ch) => {
             const m = meters[ch.id];
             const isSel = ch.id === activeInst.id;

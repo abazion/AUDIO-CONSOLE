@@ -198,7 +198,7 @@ export const SystemTelemetryPanel: React.FC = () => {
           <span className="text-slate-300">AUDIO DSP</span>
           <span
             className={`w-2 h-2 rounded-full ${
-              audioUnlocked ? 'bg-emerald-400 shadow-[0_0_7px_#34d399]' : 'bg-amber-400 animate-pulse'
+              audioUnlocked ? 'bg-emerald-400 shadow-[0_0_7px_#34d399]' : 'bg-amber-400'
             }`}
           />
         </div>
@@ -279,7 +279,7 @@ export const SystemTelemetryPanel: React.FC = () => {
         </div>
         <div className="flex items-center justify-between">
           <span className="text-slate-400">LIVE INPUTS</span>
-          <span className="text-slate-200 tabular-nums">{activeInputs} / 12 Patched</span>
+          <span className="text-slate-200 tabular-nums">{activeInputs} / {channels.length} Patched</span>
         </div>
       </div>
 

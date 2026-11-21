@@ -13,6 +13,7 @@ import type {
   SoundCheckItem,
   SpeakerBand,
   StructuredEvent,
+  VirtualCableNode,
   VirtualDiState,
 } from '../src/engine/types.ts';
 
@@ -22,6 +23,7 @@ export interface ConsoleFactoryDefaults {
   channels: ChannelStrip[];
   buses: BusNode[];
   speakers: SpeakerBand[];
+  virtualCables: VirtualCableNode[];
   virtualDi: VirtualDiState;
   scenes: SceneProfile[];
   soundCheckItems: SoundCheckItem[];
@@ -35,6 +37,7 @@ export interface PersistedConsoleStatePayload {
   channels: ChannelStrip[];
   buses: BusNode[];
   speakers: SpeakerBand[];
+  virtualCables: VirtualCableNode[];
   virtualDi: VirtualDiState;
   proposals: AiProposal[];
 }
@@ -70,6 +73,7 @@ function getDb(): DatabaseSync {
       channels_json TEXT NOT NULL,
       buses_json TEXT NOT NULL,
       speakers_json TEXT NOT NULL,
+      virtual_cables_json TEXT NOT NULL DEFAULT '[]',
       virtual_di_json TEXT NOT NULL,
       proposals_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -136,6 +140,9 @@ function getDb(): DatabaseSync {
   if (!cols.some((c) => c.name === 'theme_id')) {
     db.exec(`ALTER TABLE console_state ADD COLUMN theme_id TEXT NOT NULL DEFAULT 'obsidian-brass';`);
   }
+  if (!cols.some((c) => c.name === 'virtual_cables_json')) {
+    db.exec(`ALTER TABLE console_state ADD COLUMN virtual_cables_json TEXT NOT NULL DEFAULT '[]';`);
+  }
 
   dbInstance = db;
   return db;
@@ -152,8 +159,8 @@ function seedIfEmpty(db: DatabaseSync, defaults: ConsoleFactoryDefaults): void {
     db.prepare(
       `INSERT INTO console_state (
         id, profile_id, theme_id, active_scene_id, graph_version,
-        channels_json, buses_json, speakers_json, virtual_di_json, proposals_json, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        channels_json, buses_json, speakers_json, virtual_cables_json, virtual_di_json, proposals_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       1,
       defaults.profileId,
@@ -163,6 +170,7 @@ function seedIfEmpty(db: DatabaseSync, defaults: ConsoleFactoryDefaults): void {
       JSON.stringify(defaults.channels),
       JSON.stringify(defaults.buses),
       JSON.stringify(defaults.speakers),
+      JSON.stringify(defaults.virtualCables),
       JSON.stringify(defaults.virtualDi),
       JSON.stringify([]),
       nowIso
@@ -223,7 +231,7 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
   const row = db
     .prepare(
       `SELECT profile_id, theme_id, active_scene_id, graph_version, channels_json, buses_json,
-              speakers_json, virtual_di_json, proposals_json, updated_at
+              speakers_json, virtual_cables_json, virtual_di_json, proposals_json, updated_at
        FROM console_state WHERE id = 1`
     )
     .get() as {
@@ -234,6 +242,7 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     channels_json: string;
     buses_json: string;
     speakers_json: string;
+    virtual_cables_json: string;
     virtual_di_json: string;
     proposals_json: string;
     updated_at: string;
@@ -394,6 +403,12 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
       : { kind: 'none' as const, label: 'Unpatched · Click Source', active: false },
   }));
 
+  const parsedCables = JSON.parse(row.virtual_cables_json || '[]') as VirtualCableNode[];
+  const virtualCables =
+    Array.isArray(parsedCables) && parsedCables.length > 0
+      ? parsedCables
+      : defaults.virtualCables;
+
   return {
     profileId: row.profile_id as HardwareProfileId,
     workspaceTheme: (row.theme_id || 'obsidian-brass') as ConsoleThemeId,
@@ -402,6 +417,7 @@ export function getBootstrapData(defaults: ConsoleFactoryDefaults): BootstrapPay
     channels,
     buses: JSON.parse(row.buses_json) as BusNode[],
     speakers: JSON.parse(row.speakers_json) as SpeakerBand[],
+    virtualCables,
     virtualDi: JSON.parse(row.virtual_di_json) as VirtualDiState,
     proposals: JSON.parse(row.proposals_json) as AiProposal[],
     scenes,
@@ -421,7 +437,7 @@ export function saveConsoleState(payload: PersistedConsoleStatePayload): { updat
     `UPDATE console_state
      SET profile_id = ?, theme_id = ?, active_scene_id = ?, graph_version = ?,
          channels_json = ?, buses_json = ?, speakers_json = ?,
-         virtual_di_json = ?, proposals_json = ?, updated_at = ?
+         virtual_cables_json = ?, virtual_di_json = ?, proposals_json = ?, updated_at = ?
      WHERE id = 1`
   ).run(
     payload.profileId,
@@ -431,6 +447,7 @@ export function saveConsoleState(payload: PersistedConsoleStatePayload): { updat
     JSON.stringify(payload.channels),
     JSON.stringify(payload.buses),
     JSON.stringify(payload.speakers),
+    JSON.stringify(payload.virtualCables ?? []),
     JSON.stringify(payload.virtualDi),
     JSON.stringify(payload.proposals),
     updatedAt

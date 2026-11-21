@@ -9,9 +9,19 @@ export const VirtualDiWorkspace: React.FC = () => {
   const { virtualDi, updateVirtualDi, channels, meters, spectrum } = useAudioConsole();
   const [diTab, setDiTab] = useState<'rack' | 'topology'>('rack');
 
-  const bassCh = channels.find((c) => c.id === virtualDi.sourceChannelId) ?? channels[6];
+  const bassCh = channels.find((c) => c.id === virtualDi.sourceChannelId) ?? channels[0];
   const bassMeter = meters[bassCh.id];
   const bassBins = spectrum.slice(0, 28);
+  const liveFreqHz = bassMeter?.signalPresent ? bassMeter.fundamentalHz : 0;
+
+  const pitchNote = (hz: number) => {
+    if (hz <= 0) return '—';
+    const notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    const midi = Math.round(12 * Math.log2(hz / 440) + 69);
+    const name = notes[((midi % 12) + 12) % 12];
+    const oct = Math.floor(midi / 12) - 1;
+    return `${name}${oct}`;
+  };
 
   return (
     <div className="h-full min-h-0 flex flex-col p-2.5 gap-2 overflow-hidden">
@@ -20,8 +30,19 @@ export const VirtualDiWorkspace: React.FC = () => {
         <div className="flex items-center gap-2">
           <Zap className="w-4 h-4 text-violet-400 shrink-0" />
           <h1 className="font-display text-sm sm:text-base font-semibold text-slate-100">
-            Virtual DI &amp; Bass Processor · {bassCh.name}
+            Virtual DI &amp; Bass Processor
           </h1>
+          <select
+            value={bassCh.id}
+            onChange={(e) => updateVirtualDi({ sourceChannelId: e.target.value }, 'Changed Virtual DI source channel')}
+            className="console-btn-surface rounded px-2 py-0.5 text-[10px] font-mono text-amber-300"
+          >
+            {channels.map((c) => (
+              <option key={c.id} value={c.id}>
+                CH {String(c.number).padStart(2, '0')} · {c.shortName}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="console-module-rack p-0.5 rounded flex items-center gap-1">
@@ -78,7 +99,9 @@ export const VirtualDiWorkspace: React.FC = () => {
             <div className="dark-instrument-scope rounded p-2.5 flex-1 min-h-0 flex flex-col justify-between">
               <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
                 <span>LOW-END SPECTRUM (20–450 Hz)</span>
-                <span className="text-violet-300">55 Hz (A1)</span>
+                <span className="text-violet-300 tabular-nums">
+                  {liveFreqHz > 0 ? `${liveFreqHz.toFixed(0)} Hz (${pitchNote(liveFreqHz)})` : 'IDLE'}
+                </span>
               </div>
               <div className="flex-1 min-h-0 flex items-end gap-[3px] pt-2">
                 {bassBins.map((val, i) => {

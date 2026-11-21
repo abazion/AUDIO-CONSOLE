@@ -8,6 +8,7 @@ import type {
   SceneProfile,
   SoundCheckItem,
   SpeakerBand,
+  VirtualCableNode,
   VirtualDiState,
 } from './types';
 
@@ -15,13 +16,13 @@ export const HARDWARE_PROFILES: Record<HardwareProfileId, HardwareProfile> = {
   'auto-detected': {
     id: 'auto-detected',
     name: 'Auto-Detected Host Audio Hardware',
-    subtitle: 'Live WebAudio / OS Hardware Enumeration + Desktop Audio Loopback',
-    maxInputsLogical: 16,
-    maxBusesLogical: 8,
-    maxOutputsLogical: 8,
+    subtitle: 'Live WebAudio / OS Hardware Enumeration + Built-In Virtual Audio Cables',
+    maxInputsLogical: 128,
+    maxBusesLogical: 64,
+    maxOutputsLogical: 64,
     usbBridgeChannels: 2,
     wiringSummary:
-      'Live hardware discovery via browser MediaDevices + Desktop Audio Capture (getDisplayMedia) + Local Media Deck. Attach any detected device or system audio directly to CH 01–12.',
+      'Live hardware discovery via browser MediaDevices + per-source Browser/Tab Audio Capture (getDisplayMedia) + Local Media Decks + Built-In Virtual Audio Cables. Add unlimited input strips, parametric EQ bands, crossovers, and final outputs.',
     devices: [
       {
         id: 'dev-host-pending',
@@ -189,7 +190,7 @@ export const HARDWARE_PROFILES: Record<HardwareProfileId, HardwareProfile> = {
   },
 };
 
-function makeEq(presets?: Partial<EqBand>[]): EqBand[] {
+export function makeDefaultEqBands(presets?: Partial<EqBand>[]): EqBand[] {
   const defaults: EqBand[] = [
     { id: 'b1', label: 'LOW', enabled: true, shape: 'low-shelf', freqHz: 110, gainDb: 0, q: 0.7 },
     { id: 'b2', label: 'LO-MID', enabled: true, shape: 'bell', freqHz: 320, gainDb: 0, q: 1.4 },
@@ -197,6 +198,10 @@ function makeEq(presets?: Partial<EqBand>[]): EqBand[] {
     { id: 'b4', label: 'HIGH', enabled: true, shape: 'high-shelf', freqHz: 8500, gainDb: 0, q: 0.8 },
   ];
   return defaults.map((band, i) => ({ ...band, ...(presets?.[i] ?? {}) }));
+}
+
+function makeEq(presets?: Partial<EqBand>[]): EqBand[] {
+  return makeDefaultEqBands(presets);
 }
 
 export const ISO_31_FREQS = [
@@ -262,7 +267,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -36, preFader: false, enabled: false },
       livestream: { levelDb: 0, preFader: false, enabled: true },
     },
-    synthFreqHz: 195,
   },
   {
     id: 'ch-02',
@@ -316,7 +320,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -10, preFader: false, enabled: true },
       livestream: { levelDb: 0.5, preFader: false, enabled: true },
     },
-    synthFreqHz: 293,
   },
   {
     id: 'ch-03',
@@ -365,7 +368,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -8, preFader: false, enabled: true },
       livestream: { levelDb: -2, preFader: false, enabled: true },
     },
-    synthFreqHz: 349,
   },
   {
     id: 'ch-04',
@@ -414,7 +416,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -8, preFader: false, enabled: true },
       livestream: { levelDb: -2, preFader: false, enabled: true },
     },
-    synthFreqHz: 440,
   },
   {
     id: 'ch-05',
@@ -463,7 +464,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -16, preFader: false, enabled: true },
       livestream: { levelDb: -1, preFader: false, enabled: true },
     },
-    synthFreqHz: 220,
   },
   {
     id: 'ch-06',
@@ -512,7 +512,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -18, preFader: false, enabled: true },
       livestream: { levelDb: -2, preFader: false, enabled: true },
     },
-    synthFreqHz: 330,
   },
   {
     id: 'ch-07',
@@ -566,7 +565,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -48, preFader: false, enabled: false },
       livestream: { levelDb: 0, preFader: false, enabled: true },
     },
-    synthFreqHz: 55,
   },
   {
     id: 'ch-08',
@@ -615,7 +613,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -14, preFader: false, enabled: true },
       livestream: { levelDb: 0, preFader: false, enabled: true },
     },
-    synthFreqHz: 261.6,
   },
   {
     id: 'ch-09',
@@ -669,7 +666,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -48, preFader: false, enabled: false },
       livestream: { levelDb: 1.0, preFader: false, enabled: true },
     },
-    synthFreqHz: 60,
   },
   {
     id: 'ch-10',
@@ -718,7 +714,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -12, preFader: false, enabled: true },
       livestream: { levelDb: 0.5, preFader: false, enabled: true },
     },
-    synthFreqHz: 185,
   },
   {
     id: 'ch-11',
@@ -767,7 +762,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -16, preFader: false, enabled: true },
       livestream: { levelDb: 2.0, preFader: false, enabled: true },
     },
-    synthFreqHz: 392,
   },
   {
     id: 'ch-12',
@@ -816,7 +810,6 @@ const RAW_CHANNELS: Omit<ChannelStrip, 'geqEnabled' | 'geqBands'>[] = [
       fxReverb: { levelDb: -60, preFader: false, enabled: false },
       livestream: { levelDb: 0, preFader: false, enabled: true },
     },
-    synthFreqHz: 130.8,
   },
 ];
 
@@ -839,14 +832,145 @@ export const INITIAL_CHANNELS: ChannelStrip[] = RAW_CHANNELS.map((ch) => ({
 }));
 
 export const INITIAL_BUSES: BusNode[] = [
-  { id: 'bus-main', name: 'Main PA L/R', shortName: 'MAIN L/R', kind: 'main', faderDb: 0.0, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -0.8, assignedOutputId: 'out-pa-lr' },
-  { id: 'bus-sub', name: 'Subwoofer Mono', shortName: 'SUB', kind: 'sub', faderDb: -1.5, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -1.5, assignedOutputId: 'out-sub' },
-  { id: 'bus-mon1', name: 'Stage Mon 1 (Band)', shortName: 'MON 1', kind: 'monitor', faderDb: -2.0, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -3.0, assignedOutputId: 'out-mon1' },
-  { id: 'bus-mon2', name: 'Stage Mon 2 (Pastor)', shortName: 'MON 2', kind: 'monitor', faderDb: -3.0, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -3.0, assignedOutputId: 'out-mon2' },
-  { id: 'bus-iem', name: 'Choir IEM Bus', shortName: 'IEM', kind: 'monitor', faderDb: 0.0, mute: false, solo: false, eqEnabled: false, limiterCeilingDb: -4.0, assignedOutputId: 'out-iem' },
-  { id: 'bus-fx', name: 'Hall Reverb Send', shortName: 'FX REV', kind: 'fx', faderDb: -4.5, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -2.0, assignedOutputId: null },
-  { id: 'bus-stream', name: 'Livestream Broadcast', shortName: 'STREAM', kind: 'broadcast', faderDb: 0.0, mute: false, solo: false, eqEnabled: true, limiterCeilingDb: -1.0, assignedOutputId: 'out-stream' },
+  { id: 'bus-main', name: 'Main PA L/R', shortName: 'MAIN L/R', kind: 'main', faderDb: 0.0, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -0.8, assignedOutputId: 'out-pa-lr' },
+  { id: 'bus-sub', name: 'Subwoofer Mono', shortName: 'SUB', kind: 'sub', faderDb: -1.5, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -1.5, assignedOutputId: 'out-sub' },
+  { id: 'bus-mon1', name: 'Stage Mon 1 (Band)', shortName: 'MON 1', kind: 'monitor', faderDb: -2.0, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -3.0, assignedOutputId: 'out-mon1' },
+  { id: 'bus-mon2', name: 'Stage Mon 2 (Pastor)', shortName: 'MON 2', kind: 'monitor', faderDb: -3.0, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -3.0, assignedOutputId: 'out-mon2' },
+  { id: 'bus-iem', name: 'Choir IEM Bus', shortName: 'IEM', kind: 'monitor', faderDb: 0.0, mute: false, solo: false, eqEnabled: false, eqBands: [], limiterCeilingDb: -4.0, assignedOutputId: 'out-iem' },
+  { id: 'bus-fx', name: 'Hall Reverb Send', shortName: 'FX REV', kind: 'fx', faderDb: -4.5, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -2.0, assignedOutputId: null },
+  { id: 'bus-stream', name: 'Livestream Broadcast', shortName: 'STREAM', kind: 'broadcast', faderDb: 0.0, mute: false, solo: false, eqEnabled: true, eqBands: [], limiterCeilingDb: -1.0, assignedOutputId: 'out-stream' },
 ];
+
+export const INITIAL_VIRTUAL_CABLES: VirtualCableNode[] = [
+  {
+    id: 'vc-01',
+    name: 'VAC 1 · Internal Bus Loopback',
+    sourceKind: 'bus',
+    sourceId: 'bus-fx',
+    sourceLabel: 'Hall Reverb Send (Internal Return)',
+    gainDb: 0,
+    active: true,
+    monitorToMaster: false,
+  },
+  {
+    id: 'vc-02',
+    name: 'VAC 2 · Broadcast & Media Capture',
+    sourceKind: 'bus',
+    sourceId: 'bus-stream',
+    sourceLabel: 'Livestream Broadcast Bus',
+    gainDb: 0,
+    active: true,
+    monitorToMaster: false,
+  },
+];
+
+export function createDynamicChannelStrip(
+  number: number,
+  name: string,
+  category: ChannelStrip['category'] = 'media'
+): ChannelStrip {
+  const shortName = name.trim().toUpperCase().slice(0, 10) || `CH ${String(number).padStart(2, '0')}`;
+  const colorByCat: Record<ChannelStrip['category'], ChannelStrip['color']> = {
+    pulpit: 'amber',
+    vocal: 'cyan',
+    acoustic: 'emerald',
+    electric: 'emerald',
+    bass: 'violet',
+    keys: 'emerald',
+    drums: 'rose',
+    choir: 'slate',
+    media: 'cyan',
+  };
+  return {
+    id: `ch-${Date.now()}-${number}`,
+    number,
+    name: name.trim() || `Input Channel ${number}`,
+    shortName,
+    category,
+    color: colorByCat[category],
+    physicalPort: `Dynamic Input ${number}`,
+    micOrDiModel: category === 'media' ? 'Digital / Virtual Source' : 'Live Input Source',
+    sourceBinding: {
+      kind: 'none',
+      label: 'Unpatched · Click Source',
+      active: false,
+    },
+    hardwarePreampDb: 0,
+    softwareTrimDb: 0,
+    phantom48v: false,
+    polarityInvert: false,
+    hpfEnabled: category !== 'bass' && category !== 'drums',
+    hpfFreqHz: category === 'pulpit' || category === 'vocal' ? 105 : category === 'media' ? 40 : 85,
+    eqEnabled: true,
+    eqBands: makeDefaultEqBands(),
+    geqEnabled: false,
+    geqBands: makeGeq(),
+    dynamics: {
+      gateEnabled: false,
+      gateThresholdDb: -50,
+      gateRangeDb: -18,
+      compEnabled: true,
+      compThresholdDb: -18,
+      compRatio: 3.0,
+      compAttackMs: 12,
+      compReleaseMs: 140,
+      compMakeupDb: 0,
+      limiterEnabled: true,
+      limiterCeilingDb: -1.5,
+    },
+    delayMs: 0,
+    pan: 0,
+    faderDb: 0.0,
+    mute: false,
+    solo: false,
+    dcaGroup: null,
+    muteGroup: null,
+    assignMain: true,
+    assignSub: category === 'bass' || category === 'drums' || category === 'media',
+    assignBroadcast: true,
+    sends: {
+      mon1: { levelDb: -12, preFader: true, enabled: false },
+      mon2: { levelDb: -18, preFader: true, enabled: false },
+      iemChoir: { levelDb: -12, preFader: true, enabled: false },
+      fxReverb: { levelDb: -24, preFader: false, enabled: false },
+      livestream: { levelDb: 0, preFader: false, enabled: true },
+    },
+  };
+}
+
+export function createDynamicSpeakerOutput(
+  index: number,
+  name: string,
+  role: SpeakerBand['role'] = 'Custom Output',
+  sourceBusId = 'bus-main'
+): SpeakerBand {
+  const isSub = role === 'Subwoofer';
+  return {
+    id: `spk-${Date.now()}-${index}`,
+    name: name.trim() || `Output ${index}`,
+    role,
+    physicalConnector: `DSP Output ${index}`,
+    connectorVerified: true,
+    sourceBusId,
+    hpfHz: isSub ? 32 : 90,
+    hpfSlope: 24,
+    lpfHz: isSub ? 90 : 20000,
+    lpfSlope: isSub ? 24 : 12,
+    crossoverBypass: false,
+    family: 'Linkwitz-Riley',
+    eqEnabled: true,
+    eqBands: makeDefaultEqBands(),
+    gainDb: 0.0,
+    delayMs: 0.0,
+    polarityInvert: false,
+    limiterThresholdDb: -1.5,
+    mute: false,
+    outputSinkKind: role === 'Virtual Cable Out' ? 'virtual-cable' : 'master-mix',
+    subBoostEnabled: isSub,
+    subBoostFreqHz: 44,
+    subBoostGainDb: isSub ? 2.5 : 0,
+  };
+}
 
 export interface EqPresetItem {
   id: string;
@@ -1108,12 +1232,16 @@ export const INITIAL_SPEAKERS: SpeakerBand[] = [
     hpfSlope: 24,
     lpfHz: 90,
     lpfSlope: 24,
+    crossoverBypass: false,
     family: 'Linkwitz-Riley',
+    eqEnabled: true,
+    eqBands: [],
     gainDb: 0.0,
     delayMs: 0.0,
     polarityInvert: false,
     limiterThresholdDb: -2.0,
     mute: false,
+    outputSinkKind: 'master-mix',
     subBoostEnabled: true,
     subBoostFreqHz: 44,
     subBoostGainDb: 3.5,
@@ -1129,12 +1257,16 @@ export const INITIAL_SPEAKERS: SpeakerBand[] = [
     hpfSlope: 24,
     lpfHz: 20000,
     lpfSlope: 12,
+    crossoverBypass: false,
     family: 'Linkwitz-Riley',
+    eqEnabled: true,
+    eqBands: [],
     gainDb: 0.0,
     delayMs: 3.2,
     polarityInvert: false,
     limiterThresholdDb: -1.0,
     mute: false,
+    outputSinkKind: 'master-mix',
   },
   {
     id: 'spk-main-r',
@@ -1147,12 +1279,16 @@ export const INITIAL_SPEAKERS: SpeakerBand[] = [
     hpfSlope: 24,
     lpfHz: 20000,
     lpfSlope: 12,
+    crossoverBypass: false,
     family: 'Linkwitz-Riley',
+    eqEnabled: true,
+    eqBands: [],
     gainDb: 0.0,
     delayMs: 3.2,
     polarityInvert: false,
     limiterThresholdDb: -1.0,
     mute: false,
+    outputSinkKind: 'master-mix',
   },
   {
     id: 'spk-front-fill',
@@ -1165,12 +1301,16 @@ export const INITIAL_SPEAKERS: SpeakerBand[] = [
     hpfSlope: 24,
     lpfHz: 18000,
     lpfSlope: 12,
+    crossoverBypass: false,
     family: 'Butterworth',
+    eqEnabled: true,
+    eqBands: [],
     gainDb: -4.5,
     delayMs: 0.0,
     polarityInvert: false,
     limiterThresholdDb: -3.5,
     mute: false,
+    outputSinkKind: 'master-mix',
   },
   {
     id: 'spk-balcony',
@@ -1183,12 +1323,16 @@ export const INITIAL_SPEAKERS: SpeakerBand[] = [
     hpfSlope: 24,
     lpfHz: 18500,
     lpfSlope: 12,
+    crossoverBypass: false,
     family: 'Linkwitz-Riley',
+    eqEnabled: true,
+    eqBands: [],
     gainDb: -2.0,
     delayMs: 38.4,
     polarityInvert: false,
     limiterThresholdDb: -2.5,
     mute: false,
+    outputSinkKind: 'master-mix',
   },
 ];
 

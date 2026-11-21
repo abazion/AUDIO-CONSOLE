@@ -44,12 +44,24 @@ export type HardwareProfileId =
   | 'studio-usb-8x8';
 
 export interface AudioSourceBinding {
-  kind: 'none' | 'mic' | 'desktop' | 'file' | 'tone';
+  kind: 'none' | 'mic' | 'desktop' | 'file' | 'tone' | 'virtual-cable';
   deviceId?: string;
+  virtualCableId?: string;
   label: string;
   active: boolean;
   sampleRateHz?: number;
   channelCount?: number;
+}
+
+export interface VirtualCableNode {
+  id: string;
+  name: string;
+  sourceKind: 'idle' | 'bus' | 'channel' | 'external-tab' | 'media-deck';
+  sourceId?: string;
+  sourceLabel: string;
+  gainDb: number;
+  active: boolean;
+  monitorToMaster: boolean;
 }
 
 export interface DetectedHardwareDevice {
@@ -131,6 +143,12 @@ export interface DynamicsConfig {
 
 export type SourceCategory = 'vocal' | 'pulpit' | 'acoustic' | 'electric' | 'bass' | 'keys' | 'drums' | 'choir' | 'media';
 
+export interface ChannelSendConfig {
+  levelDb: number;
+  preFader: boolean;
+  enabled: boolean;
+}
+
 export interface ChannelStrip {
   id: string;
   number: number;
@@ -141,12 +159,7 @@ export interface ChannelStrip {
   physicalPort: string;
   micOrDiModel: string;
   sourceBinding?: AudioSourceBinding;
-  wirelessTelemetry?: {
-    rfDbm: number;
-    batteryPct: number;
-    capsule: string;
-  };
-  hardwarePreampDb: number; // manual if MG16XU
+  hardwarePreampDb: number; // manual if external analog desk
   softwareTrimDb: number;
   phantom48v: boolean;
   polarityInvert: boolean;
@@ -159,7 +172,7 @@ export interface ChannelStrip {
   dynamics: DynamicsConfig;
   delayMs: number;
   pan: number; // -100 to +100
-  faderDb: number; // -80 to +10
+  faderDb: number; // -75 to +10
   mute: boolean;
   solo: boolean;
   dcaGroup: 'A' | 'B' | 'C' | 'D' | null;
@@ -168,13 +181,13 @@ export interface ChannelStrip {
   assignSub: boolean;
   assignBroadcast: boolean;
   sends: {
-    mon1: { levelDb: number; preFader: boolean; enabled: boolean };
-    mon2: { levelDb: number; preFader: boolean; enabled: boolean };
-    iemChoir: { levelDb: number; preFader: boolean; enabled: boolean };
-    fxReverb: { levelDb: number; preFader: boolean; enabled: boolean };
-    livestream: { levelDb: number; preFader: boolean; enabled: boolean };
+    mon1: ChannelSendConfig;
+    mon2: ChannelSendConfig;
+    iemChoir: ChannelSendConfig;
+    fxReverb: ChannelSendConfig;
+    livestream: ChannelSendConfig;
+    [customBusKey: string]: ChannelSendConfig;
   };
-  synthFreqHz: number;
 }
 
 export interface BusNode {
@@ -186,16 +199,28 @@ export interface BusNode {
   mute: boolean;
   solo: boolean;
   eqEnabled: boolean;
+  eqBands?: EqBand[];
   limiterCeilingDb: number;
   assignedOutputId: string | null;
 }
 
 export type CrossoverFamily = 'Linkwitz-Riley' | 'Butterworth' | 'Bessel';
 
+export type SpeakerRole =
+  | 'Subwoofer'
+  | 'Low-Mid'
+  | 'High-Mid / Horn'
+  | 'Front Fill'
+  | 'Balcony Delay'
+  | 'Monitor Wedge'
+  | 'Broadcast / Stream'
+  | 'Virtual Cable Out'
+  | 'Custom Output';
+
 export interface SpeakerBand {
   id: string;
   name: string;
-  role: 'Subwoofer' | 'Low-Mid' | 'High-Mid / Horn' | 'Front Fill' | 'Balcony Delay';
+  role: SpeakerRole;
   physicalConnector: string;
   connectorVerified: boolean;
   sourceBusId: string;
@@ -203,12 +228,18 @@ export interface SpeakerBand {
   hpfSlope: 12 | 24 | 48;
   lpfHz: number;
   lpfSlope: 12 | 24 | 48;
+  crossoverBypass?: boolean;
   family: CrossoverFamily;
+  eqEnabled?: boolean;
+  eqBands?: EqBand[];
   gainDb: number;
   delayMs: number;
   polarityInvert: boolean;
   limiterThresholdDb: number;
   mute: boolean;
+  outputSinkKind?: 'master-mix' | 'device-sink' | 'virtual-cable';
+  outputDeviceId?: string;
+  virtualCableId?: string;
   subBoostEnabled?: boolean;
   subBoostFreqHz?: number;
   subBoostGainDb?: number;
@@ -323,8 +354,13 @@ export interface MeterReading {
   peakDbfs: number;
   rmsDbfs: number;
   peakHoldDbfs: number;
+  peakHoldClipped: boolean;
+  noiseFloorDbfs: number;
+  crestFactorDb: number;
+  fundamentalHz: number;
   clipping: boolean;
   gainReductionDb: number;
+  gainReductionHistory: number[];
   signalPresent: boolean;
   source: MeasurementSource;
   graphVersion: number;

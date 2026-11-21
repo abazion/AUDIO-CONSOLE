@@ -173,21 +173,21 @@ export const SoundCheckWorkspace: React.FC = () => {
               <div className="col-span-5">
                 <AnalogVuMeter
                   label="PROBE IN VU"
-                  levelDbfs={mainMeter?.inputRmsDbfs ?? -48}
-                  peakLed={(mainMeter?.inputPeakDbfs ?? -60) > -0.5}
+                  levelDbfs={mainMeter?.inputRmsDbfs ?? -80}
+                  peakLed={(mainMeter?.inputPeakDbfs ?? -80) > -0.5}
                 />
               </div>
               <div className="col-span-5">
                 <AnalogVuMeter
                   label="PA RETURN VU"
-                  levelDbfs={mainMeter?.rmsDbfs ?? -48}
+                  levelDbfs={mainMeter?.rmsDbfs ?? -80}
                   peakLed={mainMeter?.clipping}
                 />
               </div>
               <div className="col-span-2 flex justify-center">
                 <LedMeter
-                  peakDbfs={mainMeter?.peakDbfs ?? -70}
-                  peakHoldDbfs={mainMeter?.peakHoldDbfs ?? -70}
+                  peakDbfs={mainMeter?.peakDbfs ?? -80}
+                  peakHoldDbfs={mainMeter?.peakHoldDbfs ?? -80}
                   height={84}
                   width={10}
                   segments={12}
@@ -296,12 +296,12 @@ export const SoundCheckWorkspace: React.FC = () => {
             <div className="grid grid-cols-2 gap-2">
               <AnalogVuMeter
                 label="PROBE IN VU"
-                levelDbfs={mainMeter?.inputRmsDbfs ?? -48}
-                peakLed={(mainMeter?.inputPeakDbfs ?? -60) > -0.5}
+                levelDbfs={mainMeter?.inputRmsDbfs ?? -80}
+                peakLed={(mainMeter?.inputPeakDbfs ?? -80) > -0.5}
               />
               <AnalogVuMeter
                 label="PA RETURN VU"
-                levelDbfs={mainMeter?.rmsDbfs ?? -48}
+                levelDbfs={mainMeter?.rmsDbfs ?? -80}
                 peakLed={mainMeter?.clipping}
               />
             </div>

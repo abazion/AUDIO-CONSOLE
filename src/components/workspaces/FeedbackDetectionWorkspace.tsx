@@ -13,6 +13,7 @@ export const FeedbackDetectionWorkspace: React.FC = () => {
     channels,
     spectrum,
     updateChannel,
+    updateFeedbackIncident,
     applyFeedbackNotch,
     dismissFeedbackIncident,
   } = useAudioConsole();
@@ -22,13 +23,15 @@ export const FeedbackDetectionWorkspace: React.FC = () => {
   const [holdWindowMs, setHoldWindowMs] = useState<number>(350);
   const [autoRingWatch, setAutoRingWatch] = useState<boolean>(true);
 
-  const watchChannels = channels.slice(0, 4);
+  const priorityChannels = channels.filter(
+    (c) => c.category === 'pulpit' || c.category === 'vocal' || c.category === 'choir' || c.sourceBinding?.active
+  );
+  const watchChannels = (priorityChannels.length >= 4 ? priorityChannels : channels).slice(0, 4);
   const activeIncidents = feedbackIncidents.filter(
     (f) => f.status === 'feedback_detected' || f.status === 'risk_predicted'
   );
   const activeCount = activeIncidents.length;
   const globalRisk = activeCount > 0 ? Math.min(94, 48 + activeCount * 22) : 6;
-  const gainMarginDb = activeCount > 0 ? 11 : 22;
 
   const liveSpectralPeak = useMemo(() => {
     let bestVal = -80;
@@ -42,6 +45,11 @@ export const FeedbackDetectionWorkspace: React.FC = () => {
     const freqHz = Math.round(20 * Math.pow(1000, bestIdx / 63));
     return { freqHz, levelDb: bestVal };
   }, [spectrum]);
+
+  const gainMarginDb =
+    activeCount > 0
+      ? Math.max(0, 24 - Math.round(activeCount * 5 + Math.max(0, liveSpectralPeak.levelDb + 30) * 0.4))
+      : 24;
 
   const waterfallRows = useMemo(() => {
     return Array.from({ length: 8 }).map((_, rowIdx) =>
@@ -254,7 +262,7 @@ export const FeedbackDetectionWorkspace: React.FC = () => {
                           unit="dB"
                           accentColor="rose"
                           disabled={resolved}
-                          onChange={() => {}}
+                          onChange={(v) => updateFeedbackIncident(inc.id, { notchProposedDb: v })}
                         />
                       </div>
                       {!resolved ? (
@@ -288,7 +296,16 @@ export const FeedbackDetectionWorkspace: React.FC = () => {
                 <div className="text-[9px] font-mono text-amber-300">
                   F{idx + 1}: {inc.freqHz}Hz
                 </div>
-                <RotaryKnob label="Q" value={inc.qEstimate} min={4} max={24} step={0.5} size={32} accentColor="cyan" onChange={() => {}} />
+                <RotaryKnob
+                  label="Q"
+                  value={inc.qEstimate}
+                  min={4}
+                  max={24}
+                  step={0.5}
+                  size={32}
+                  accentColor="cyan"
+                  onChange={(v) => updateFeedbackIncident(inc.id, { qEstimate: v })}
+                />
                 <ConsoleButton
                   label={inc.status === 'suppression_applied_verified' ? 'ACTIVE' : 'ENGAGE'}
                   size="xs"
