@@ -1,0 +1,664 @@
+@import "tailwindcss";
+
+@layer base {
+  :root,
+  [data-console-theme="obsidian-brass"] {
+    --font-display: 'Outfit', system-ui, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+    --console-bg: #090b0e;
+    --console-bar: #0c0f14;
+    --console-subbar: #0a0c11;
+    --console-footer: #0b0e13;
+    --console-chassis-top: #181c24;
+    --console-chassis-bot: #11151c;
+    --console-panel-top: #141821;
+    --console-panel-bot: #0e1117;
+    --console-well: #07090d;
+    --console-oled-top: #0d1722;
+    --console-oled-bot: #05080d;
+    --console-border: rgba(255, 255, 255, 0.09);
+    --console-accent: #f59e0b;
+    --console-accent-soft: rgba(245, 158, 11, 0.16);
+    --console-accent-border: rgba(245, 158, 11, 0.45);
+    --console-accent-text: #fcd34d;
+    --console-scroll-track: #0a0c10;
+    --console-scroll-thumb: #242a36;
+
+    --nav-rack-bg: #261d0e;
+    --nav-rack-border: rgba(245, 158, 11, 0.5);
+    --nav-tab-bg: linear-gradient(180deg, #433216 0%, #30230f 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #57411c 0%, #3f2e13 100%);
+    --nav-tab-border: rgba(251, 191, 36, 0.45);
+    --nav-tab-text: #fef3c7;
+    --nav-tab-active-bg: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+    --nav-tab-active-border: #fde68a;
+    --nav-tab-active-text: #090b0e;
+
+    --subnav-rack-bg: #0b2638;
+    --subnav-rack-border: rgba(34, 211, 238, 0.48);
+    --subnav-tab-bg: linear-gradient(180deg, #13415c 0%, #0d2e42 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #195375 0%, #113b54 100%);
+    --subnav-tab-border: rgba(56, 189, 248, 0.48);
+    --subnav-tab-text: #cffafe;
+    --subnav-tab-active-bg: linear-gradient(180deg, #22d3ee 0%, #0284c7 100%);
+    --subnav-tab-active-border: #a5f3fc;
+    --subnav-tab-active-text: #041523;
+  }
+
+  [data-console-theme="cobalt-neve"] {
+    --console-bg: #051124;
+    --console-bar: #081a36;
+    --console-subbar: #06152c;
+    --console-footer: #081830;
+    --console-chassis-top: #132b4d;
+    --console-chassis-bot: #0c1d36;
+    --console-panel-top: #102644;
+    --console-panel-bot: #0a182d;
+    --console-well: #040d1b;
+    --console-oled-top: #0d2742;
+    --console-oled-bot: #040c18;
+    --console-border: rgba(125, 211, 252, 0.2);
+    --console-accent: #38bdf8;
+    --console-accent-soft: rgba(56, 189, 248, 0.2);
+    --console-accent-border: rgba(56, 189, 248, 0.55);
+    --console-accent-text: #7dd3fc;
+    --console-scroll-track: #051124;
+    --console-scroll-thumb: #1d3c66;
+
+    --nav-rack-bg: #11315e;
+    --nav-rack-border: rgba(56, 189, 248, 0.55);
+    --nav-tab-bg: linear-gradient(180deg, #1c4c8c 0%, #143869 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #235da8 0%, #1a4785 100%);
+    --nav-tab-border: rgba(125, 211, 252, 0.5);
+    --nav-tab-text: #e0f2fe;
+    --nav-tab-active-bg: linear-gradient(180deg, #7dd3fc 0%, #0ea5e9 100%);
+    --nav-tab-active-border: #e0f2fe;
+    --nav-tab-active-text: #041124;
+
+    --subnav-rack-bg: #231645;
+    --subnav-rack-border: rgba(167, 139, 250, 0.55);
+    --subnav-tab-bg: linear-gradient(180deg, #38246b 0%, #291a50 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #472e87 0%, #342166 100%);
+    --subnav-tab-border: rgba(196, 181, 253, 0.45);
+    --subnav-tab-text: #ede9fe;
+    --subnav-tab-active-bg: linear-gradient(180deg, #c4b5fd 0%, #7c3aed 100%);
+    --subnav-tab-active-border: #ede9fe;
+    --subnav-tab-active-text: #120729;
+  }
+
+  [data-console-theme="warm-mahogany"] {
+    --console-bg: #160c07;
+    --console-bar: #20120b;
+    --console-subbar: #1a0f09;
+    --console-footer: #1d110a;
+    --console-chassis-top: #341e14;
+    --console-chassis-bot: #22130c;
+    --console-panel-top: #2a1810;
+    --console-panel-bot: #1b100a;
+    --console-well: #0f0704;
+    --console-oled-top: #29160d;
+    --console-oled-bot: #0c0603;
+    --console-border: rgba(251, 146, 60, 0.2);
+    --console-accent: #fb923c;
+    --console-accent-soft: rgba(251, 146, 60, 0.2);
+    --console-accent-border: rgba(251, 146, 60, 0.55);
+    --console-accent-text: #fdba74;
+    --console-scroll-track: #160c07;
+    --console-scroll-thumb: #4b2b1c;
+
+    --nav-rack-bg: #3b1c0f;
+    --nav-rack-border: rgba(251, 146, 60, 0.55);
+    --nav-tab-bg: linear-gradient(180deg, #5c2c17 0%, #442010 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #73371d 0%, #562815 100%);
+    --nav-tab-border: rgba(253, 186, 116, 0.5);
+    --nav-tab-text: #ffedd5;
+    --nav-tab-active-bg: linear-gradient(180deg, #fdba74 0%, #ea580c 100%);
+    --nav-tab-active-border: #ffedd5;
+    --nav-tab-active-text: #160c07;
+
+    --subnav-rack-bg: #0c2c38;
+    --subnav-rack-border: rgba(34, 211, 238, 0.5);
+    --subnav-tab-bg: linear-gradient(180deg, #14495c 0%, #0e3544 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #1b5e75 0%, #124457 100%);
+    --subnav-tab-border: rgba(103, 232, 249, 0.45);
+    --subnav-tab-text: #cffafe;
+    --subnav-tab-active-bg: linear-gradient(180deg, #67e8f9 0%, #0891b2 100%);
+    --subnav-tab-active-border: #ecfeff;
+    --subnav-tab-active-text: #04171f;
+  }
+
+  [data-console-theme="emerald-broadcast"] {
+    --console-bg: #04150f;
+    --console-bar: #072017;
+    --console-subbar: #051a12;
+    --console-footer: #061d15;
+    --console-chassis-top: #103326;
+    --console-chassis-bot: #0a2219;
+    --console-panel-top: #0e2a1f;
+    --console-panel-bot: #081a13;
+    --console-well: #030e0a;
+    --console-oled-top: #0b2d22;
+    --console-oled-bot: #030c08;
+    --console-border: rgba(52, 211, 153, 0.2);
+    --console-accent: #10b981;
+    --console-accent-soft: rgba(16, 185, 129, 0.2);
+    --console-accent-border: rgba(16, 185, 129, 0.55);
+    --console-accent-text: #6ee7b7;
+    --console-scroll-track: #04150f;
+    --console-scroll-thumb: #184e3b;
+
+    --nav-rack-bg: #0b3626;
+    --nav-rack-border: rgba(52, 211, 153, 0.55);
+    --nav-tab-bg: linear-gradient(180deg, #13543c 0%, #0e3e2c 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #186b4c 0%, #124f38 100%);
+    --nav-tab-border: rgba(110, 231, 183, 0.5);
+    --nav-tab-text: #ecfdf5;
+    --nav-tab-active-bg: linear-gradient(180deg, #6ee7b7 0%, #059669 100%);
+    --nav-tab-active-border: #d1fae5;
+    --nav-tab-active-text: #03140d;
+
+    --subnav-rack-bg: #142847;
+    --subnav-rack-border: rgba(96, 165, 250, 0.5);
+    --subnav-tab-bg: linear-gradient(180deg, #214070 0%, #183054 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #2a518c 0%, #1e3d6b 100%);
+    --subnav-tab-border: rgba(147, 197, 253, 0.45);
+    --subnav-tab-text: #dbeafe;
+    --subnav-tab-active-bg: linear-gradient(180deg, #93c5fd 0%, #0284c7 100%);
+    --subnav-tab-active-border: #eff6ff;
+    --subnav-tab-active-text: #041429;
+  }
+
+  [data-console-theme="titanium-steel"] {
+    --console-bg: #19202b;
+    --console-bar: #222b3a;
+    --console-subbar: #1d2532;
+    --console-footer: #202836;
+    --console-chassis-top: #323f53;
+    --console-chassis-bot: #242e3e;
+    --console-panel-top: #2a3648;
+    --console-panel-bot: #1f2837;
+    --console-well: #131923;
+    --console-oled-top: #1a283d;
+    --console-oled-bot: #0e1520;
+    --console-border: rgba(203, 213, 225, 0.22);
+    --console-accent: #60a5fa;
+    --console-accent-soft: rgba(96, 165, 250, 0.2);
+    --console-accent-border: rgba(96, 165, 250, 0.55);
+    --console-accent-text: #93c5fd;
+    --console-scroll-track: #19202b;
+    --console-scroll-thumb: #42546e;
+
+    --nav-rack-bg: #16263f;
+    --nav-rack-border: rgba(96, 165, 250, 0.55);
+    --nav-tab-bg: linear-gradient(180deg, #26416b 0%, #1c3152 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #305287 0%, #233d66 100%);
+    --nav-tab-border: rgba(147, 197, 253, 0.5);
+    --nav-tab-text: #eff6ff;
+    --nav-tab-active-bg: linear-gradient(180deg, #93c5fd 0%, #2563eb 100%);
+    --nav-tab-active-border: #dbeafe;
+    --nav-tab-active-text: #061124;
+
+    --subnav-rack-bg: #2c2313;
+    --subnav-rack-border: rgba(245, 158, 11, 0.5);
+    --subnav-tab-bg: linear-gradient(180deg, #47381d 0%, #362a15 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #5c4825 0%, #45361b 100%);
+    --subnav-tab-border: rgba(252, 211, 77, 0.45);
+    --subnav-tab-text: #fef3c7;
+    --subnav-tab-active-bg: linear-gradient(180deg, #fcd34d 0%, #d97706 100%);
+    --subnav-tab-active-border: #fef3c7;
+    --subnav-tab-active-text: #140d04;
+  }
+
+  :root[data-console-theme="daylight-studio"] {
+    --console-bg: #e7ecf3;
+    --console-bar: #ffffff;
+    --console-subbar: #dde4ee;
+    --console-footer: #f1f5f9;
+    --console-chassis-top: #ffffff;
+    --console-chassis-bot: #eaeff6;
+    --console-panel-top: #f8fafc;
+    --console-panel-bot: #edf2f8;
+    --console-well: #d6dfe9;
+    --console-oled-top: #0f1b2a;
+    --console-oled-bot: #060b12;
+    --console-border: rgba(15, 23, 42, 0.14);
+    --console-accent: #d97706;
+    --console-accent-soft: rgba(217, 119, 6, 0.14);
+    --console-accent-border: rgba(217, 119, 6, 0.55);
+    --console-accent-text: #b45309;
+    --console-scroll-track: #dde4ee;
+    --console-scroll-thumb: #94a3b8;
+    --console-ink: #0f172a;
+
+    /* Tailwind v4 semantic light-mode palette adaptation (keeps OLEDs dark via .oled-display scope) */
+    --color-slate-100: #0f172a;
+    --color-slate-200: #1e293b;
+    --color-slate-300: #334155;
+    --color-slate-400: #475569;
+    --color-slate-500: #64748b;
+    --color-amber-200: #92400e;
+    --color-amber-300: #b45309;
+    --color-sky-200: #075985;
+    --color-sky-300: #0369a1;
+    --color-sky-400: #0284c7;
+    --color-emerald-200: #065f46;
+    --color-emerald-300: #047857;
+    --color-emerald-400: #059669;
+    --color-rose-200: #9f1239;
+    --color-rose-300: #be123c;
+    --color-violet-300: #6d28d9;
+
+    --nav-rack-bg: #0f172a;
+    --nav-rack-border: #334155;
+    --nav-tab-bg: linear-gradient(180deg, #334155 0%, #1e293b 100%);
+    --nav-tab-bg-hover: linear-gradient(180deg, #475569 0%, #334155 100%);
+    --nav-tab-border: #64748b;
+    --nav-tab-text: #f8fafc;
+    --nav-tab-active-bg: linear-gradient(180deg, #fbbf24 0%, #d97706 100%);
+    --nav-tab-active-border: #fef3c7;
+    --nav-tab-active-text: #0f172a;
+
+    --subnav-rack-bg: #bfdbfe;
+    --subnav-rack-border: #3b82f6;
+    --subnav-tab-bg: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 100%);
+    --subnav-tab-bg-hover: linear-gradient(180deg, #ffffff 0%, #dbeafe 100%);
+    --subnav-tab-border: #2563eb;
+    --subnav-tab-text: #0f2952;
+    --subnav-tab-active-bg: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+    --subnav-tab-active-border: #1e3a8a;
+    --subnav-tab-active-text: #ffffff;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--console-bg);
+    color: #e2e8f0;
+    overflow-x: hidden;
+    transition: background-color 220ms ease, color 220ms ease;
+  }
+
+  :root[data-console-theme="daylight-studio"] body {
+    color: #0f172a;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono, .tabular-nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Tactile Analog Console Surfaces & Theme-Driven Hardware Bevels */
+.console-shell-bg {
+  background-color: var(--console-bg);
+  transition: background-color 220ms ease;
+}
+
+.console-header-bar {
+  background-color: var(--console-bar);
+  border-color: var(--console-border);
+}
+
+.console-subbar {
+  background-color: var(--console-subbar);
+}
+
+.console-footer-bar {
+  background-color: var(--console-footer);
+  border-color: var(--console-border);
+}
+
+.console-chassis {
+  background: linear-gradient(180deg, var(--console-chassis-top) 0%, var(--console-chassis-bot) 100%);
+  border-color: var(--console-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.6),
+    0 6px 18px rgba(0, 0, 0, 0.42);
+}
+
+:root[data-console-theme="daylight-studio"] .console-chassis {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 4px 16px rgba(15, 23, 42, 0.08);
+}
+
+.console-panel {
+  background: linear-gradient(180deg, var(--console-panel-top) 0%, var(--console-panel-bot) 100%);
+  border: 1px solid var(--console-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+:root[data-console-theme="daylight-studio"] .console-panel {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 1px 4px rgba(15, 23, 42, 0.06);
+}
+
+.console-well {
+  background: var(--console-well);
+  border: 1px solid var(--console-border);
+  box-shadow:
+    inset 0 2px 6px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-console-theme="daylight-studio"] .console-well {
+  box-shadow:
+    inset 0 2px 5px rgba(15, 23, 42, 0.14),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.05);
+}
+
+.console-btn-surface {
+  background-color: var(--console-panel-top);
+  border: 1px solid var(--console-border);
+}
+
+.console-btn-surface:hover {
+  border-color: var(--console-accent-border);
+}
+
+.console-hw-btn-off {
+  background: linear-gradient(180deg, #232934 0%, #181c24 100%);
+  color: #cbd5e1;
+  border-color: rgba(100, 116, 139, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 2px 4px rgba(0, 0, 0, 0.6);
+}
+
+:root[data-console-theme="daylight-studio"] .console-hw-btn-off {
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  color: #1e293b;
+  border-color: rgba(15, 23, 42, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.oled-display,
+.dark-instrument-scope {
+  background: radial-gradient(circle at 50% 0%, var(--console-oled-top) 0%, var(--console-oled-bot) 100%);
+  border: 1px solid var(--console-accent-border);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.85),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Preserve crisp light-on-dark typography inside OLED readouts & RTA scopes even in Day Mode */
+:root[data-console-theme="daylight-studio"] .oled-display,
+:root[data-console-theme="daylight-studio"] .dark-instrument-scope {
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-amber-300: #fcd34d;
+  --color-sky-300: #7dd3fc;
+  --color-sky-400: #38bdf8;
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-400: #34d399;
+  --color-rose-300: #fda4af;
+  color: #e2e8f0;
+}
+
+.console-accent-active {
+  background-color: var(--console-accent-soft);
+  border-color: var(--console-accent-border);
+  color: var(--console-accent-text);
+}
+
+.console-accent-solid {
+  background-color: var(--console-accent);
+  color: #05080d;
+  font-weight: 700;
+  box-shadow: 0 0 12px var(--console-accent-soft);
+}
+
+:root[data-console-theme="daylight-studio"] .console-accent-solid {
+  color: #ffffff;
+}
+
+/* Primary Navigation Tabs — Persistent High-Contrast Illuminated Console Rack */
+.console-nav-rack {
+  background: var(--nav-rack-bg);
+  border: 1.5px solid var(--nav-rack-border);
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.45),
+    0 2px 10px rgba(0, 0, 0, 0.28);
+}
+
+.console-nav-tab {
+  background: var(--nav-tab-bg);
+  border: 1px solid var(--nav-tab-border);
+  color: var(--nav-tab-text);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.console-nav-tab:hover {
+  background: var(--nav-tab-bg-hover);
+  border-color: var(--nav-tab-active-border);
+  color: #ffffff;
+}
+
+.console-nav-tab-active {
+  background: var(--nav-tab-active-bg);
+  border: 1.5px solid var(--nav-tab-active-border);
+  color: var(--nav-tab-active-text);
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    0 0 14px var(--console-accent-soft);
+}
+
+/* Sub-Navigation Tabs — Distinct Persistent Technical Contrast Family */
+.console-subnav-rack {
+  background: var(--subnav-rack-bg);
+  border: 1.5px solid var(--subnav-rack-border);
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.35),
+    0 1px 6px rgba(0, 0, 0, 0.2);
+}
+
+.console-subnav-tab {
+  background: var(--subnav-tab-bg);
+  border: 1px solid var(--subnav-tab-border);
+  color: var(--subnav-tab-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.console-subnav-tab:hover {
+  background: var(--subnav-tab-bg-hover);
+  border-color: var(--subnav-tab-active-border);
+}
+
+.console-subnav-tab-active {
+  background: var(--subnav-tab-active-bg);
+  border: 1.5px solid var(--subnav-tab-active-border);
+  color: var(--subnav-tab-active-text);
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    0 0 12px rgba(56, 189, 248, 0.28);
+}
+
+/* Inner Dashboard Module Switcher Tabs — Neutral Hardware Function Buttons (Distinct from Global Nav) */
+.console-module-rack {
+  background: var(--console-well);
+  border: 1px solid var(--console-border);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.console-module-tab {
+  background: linear-gradient(180deg, var(--console-panel-top) 0%, var(--console-panel-bot) 100%);
+  border: 1px solid var(--console-border);
+  color: var(--color-slate-300, #cbd5e1);
+}
+
+.console-module-tab:hover {
+  border-color: var(--console-accent-border);
+  color: var(--color-slate-100, #f1f5f9);
+}
+
+.console-module-tab-active {
+  background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+  border: 1px solid #6ee7b7;
+  color: #03150e;
+  font-weight: 800;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+:root[data-console-theme="daylight-studio"] .console-module-tab {
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 100%);
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  color: #334155;
+}
+
+:root[data-console-theme="daylight-studio"] .console-module-tab-active {
+  background: linear-gradient(180deg, #059669 0%, #047857 100%);
+  border: 1px solid #065f46;
+  color: #ffffff;
+}
+
+.console-selected-strip {
+  background: linear-gradient(180deg, var(--console-chassis-top) 0%, var(--console-panel-bot) 100%);
+  border-color: var(--console-accent-border);
+  box-shadow: 0 0 18px var(--console-accent-soft);
+}
+
+.console-unselected-strip {
+  background: linear-gradient(180deg, var(--console-panel-top) 0%, var(--console-panel-bot) 100%);
+  border-color: var(--console-border);
+}
+
+.fader-slot {
+  background: linear-gradient(90deg, #050608 0%, var(--console-well) 50%, #050608 100%);
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.95),
+    inset 1px 0 0 rgba(0, 0, 0, 0.8),
+    inset -1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+:root[data-console-theme="daylight-studio"] .fader-slot {
+  background: linear-gradient(90deg, #94a3b8 0%, #64748b 50%, #94a3b8 100%);
+  box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.45);
+}
+
+.fader-cap {
+  background: linear-gradient(
+    180deg,
+    #4b5563 0%,
+    #2d333d 18%,
+    #1e232b 50%,
+    #2c323c 82%,
+    #181c23 100%
+  );
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.85),
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.7);
+}
+
+:root[data-console-theme="daylight-studio"] .fader-cap {
+  background: linear-gradient(180deg, #ffffff 0%, #e2e8f0 25%, #cbd5e1 65%, #94a3b8 100%);
+  box-shadow:
+    0 3px 6px rgba(15, 23, 42, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.25);
+}
+
+.fader-cap:hover {
+  background: linear-gradient(
+    180deg,
+    #586374 0%,
+    #353c48 18%,
+    #242933 50%,
+    #343a46 82%,
+    #1c2129 100%
+  );
+}
+
+:root[data-console-theme="daylight-studio"] .fader-cap:hover {
+  background: linear-gradient(180deg, #ffffff 0%, #f1f5f9 30%, #cbd5e1 100%);
+}
+
+.knob-body {
+  background: radial-gradient(circle at 32% 28%, #3c4452 0%, #1c2129 58%, #101318 100%);
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.8),
+    inset 0 1px 1px rgba(255, 255, 255, 0.22),
+    inset 0 -2px 3px rgba(0, 0, 0, 0.8);
+}
+
+:root[data-console-theme="daylight-studio"] .knob-body {
+  background: radial-gradient(circle at 32% 28%, #f8fafc 0%, #cbd5e1 55%, #94a3b8 100%);
+  box-shadow:
+    0 3px 6px rgba(15, 23, 42, 0.22),
+    inset 0 1px 1px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 3px rgba(15, 23, 42, 0.25);
+}
+
+/* Ensure dark workspace inline cards flatten cleanly to silver-light in Day Mode */
+:root[data-console-theme="daylight-studio"] .bg-\[\#141821\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#161c26\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#181d27\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#1a1f29\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#171c25\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#111620\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#10141c\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#12161e\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#0d1017\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#0b0e14\],
+:root[data-console-theme="daylight-studio"] .bg-\[\#090b0f\] {
+  background-color: #f1f5f9;
+  color: #0f172a;
+}
+
+:root[data-console-theme="daylight-studio"] .border-white\/10,
+:root[data-console-theme="daylight-studio"] .border-white\/15,
+:root[data-console-theme="daylight-studio"] .border-white\/\[0\.06\],
+:root[data-console-theme="daylight-studio"] .border-white\/\[0\.07\] {
+  border-color: rgba(15, 23, 42, 0.14);
+}
+
+.rack-screw {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 35% 35%, #64748b 0%, #1e293b 70%, #0f172a 100%);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Custom slim engineering scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--console-scroll-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--console-scroll-thumb);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

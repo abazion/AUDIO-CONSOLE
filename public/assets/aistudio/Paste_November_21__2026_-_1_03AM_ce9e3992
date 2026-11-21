@@ -1,0 +1,543 @@
+# Church Intelligence Audio Console
+
+## Collective Master Implementation Blueprint
+
+**Status:** Consolidated product and engineering blueprint  
+**Purpose:** Define what the product should become, how its parts fit together, and the order in which it should be implemented.  
+**Architecture principle:** One hardware-aware audio platform, one authoritative signal graph, one real-time engine, and thirteen synchronized workspaces.
+
+---
+
+## 1. Product definition
+
+Church Intelligence Audio Console is a professional digital mixing and audio engineering platform for church sound systems. It brings live mixing, computer-side processing, routing, measurement, broadcast, diagnostics, presets, and guided recommendations into one coherent control room. Its architecture is benchmarked against high-capacity digital consoles and must not be designed around entry-level mixer or PC sound-card limits.
+
+The product must work across analog, digital, and hybrid installations through capability-aware device integrations. The Yamaha MG16XU and ASUS Xonar DGX are the first reference setup for development and validation; they are not the product's architectural limit.
+
+### Product mission
+
+Help church operators and audio engineers understand, operate, measure, and improve the sound system from source to destination, while clearly showing what the software can control, what it can observe, and what requires physical action.
+
+### Core promise
+
+**One engine. Any supported hardware. Complete signal visibility. Intelligent sound management.**
+
+### Primary users
+
+- **Service operator:** runs the live mix, monitors outputs, and needs quick access to safe controls.
+- **Audio engineer:** configures processing, routing, speakers, measurements, and system profiles.
+- **System maintainer:** diagnoses devices, failures, signal loss, and configuration drift.
+
+The same installation may have one person performing all three roles.
+
+---
+
+## 2. Product-wide rules
+
+These rules govern every module, integration, and screen.
+
+1. **One execution authority:** the Unified Audio Engine is the only authority that executes software audio processing and routing.
+2. **One routing authority:** the versioned Signal Graph is the canonical representation of intended and active signal topology. The graph must report whether a configuration is merely saved, validated, pending, active, or failed.
+3. **Hardware truth:** never present an unavailable or unobservable hardware control as functional. Unsupported or manual controls must be labelled accurately.
+4. **Evidence labels:** distinguish hardware-reported measurements, software measurements, estimates, and AI recommendations.
+5. **Real-time independence:** the audio path must continue if the UI, database, network, or AI service becomes slow or unavailable.
+6. **Validated changes:** validate routing and DSP changes before activation; commit them safely at an audio processing boundary and preserve rollback to the previous valid state.
+7. **Traceability:** every source, processor, route, bus, output, and measurement point has a stable ID and appears in global signal tracing.
+8. **Scalable channel model:** support at least two independent channels from the first DSP implementation, with channel counts and layouts declared by device capabilities rather than hard-coded as stereo.
+9. **No competing module engines:** workspaces read and command shared engine services; they do not maintain their own audio graph or duplicate processing implementations.
+10. **Operator authority:** consequential live changes, scene recall, AI proposals, and sound-check operations require an explicit review/confirmation policy.
+11. **Professional scale:** define capacity by qualified system profiles, with a design target for 128 processing inputs, 64 mix outputs, and 64 configurable buses; never claim this scale or a latency figure before it passes sustained-load qualification.
+12. **Clock integrity:** device, network, and engine clock domains are explicit. Do not combine unsynchronized sources silently or conceal drift with a status label that implies clock lock.
+
+---
+
+## 3. Information architecture and operating experience
+
+Keep all thirteen workspaces, but organize the main navigation into six groups. This preserves specialist depth without making the main navigation a flat list of thirteen equal destinations.
+
+| Main destination | Workspaces |
+|---|---|
+| **Overview** | Master System Overview |
+| **Inputs & Channels** | Live Sound Console; Microphone Intelligence; Instrument Intelligence; Virtual DI & Bass |
+| **Mixing & Processing** | Professional Audio DSP & EQ; Intelligent Feedback Detection; Acoustic Intelligence & Room Analyzer |
+| **Routing & Outputs** | Universal Routing & Signal Flow; Intelligent Speaker Management; Livestream Studio |
+| **Service Operations** | Automated Sound Check; Presets & Service Profiles |
+| **Intelligence & System** | AI Sound Engineer; System Diagnostics & Reliability |
+
+### Three global system screens
+
+These are application-wide views, not additional processing engines or extra modules:
+
+1. **Master System Overview:** system health, device state, inputs, processing, buses, outputs, alerts, and quick actions.
+2. **Universal Routing & Signal Flow:** live graph and routing matrix generated from the engine's actual configuration.
+3. **Universal Signal Journey:** globally available forward and reverse traces from any source, channel, processor, bus, or destination.
+
+Global search should find a source, channel, bus, processor, device, or output and open its relevant inspector or Signal Journey.
+
+### Operating modes
+
+- **Console mode:** full-screen, high-density, fast live operation.
+- **Engineering mode:** detailed routing, processor parameters, measurement graphs, and configuration tools.
+- **Compact mode:** usable surface for smaller displays while retaining essential status and controls.
+
+Moving between modes must preserve selected source, graph context, and active settings.
+
+### Shared application shell
+
+- **Master system bar:** engine and device status, sample rate, buffer, clock state, CPU/DSP load, measured/estimated latency, active alerts, and current scene.
+- **Workspace selector:** the six main destinations and their workspace menus.
+- **Source selector:** inputs, groups, buses, and outputs.
+- **Main instrument surface:** module-specific faders, knobs, meters, graphs, routing, and processing controls.
+- **Inspector/monitor:** selected-object controls, signal journey, measurements, warnings, and capability labels.
+- **Monitoring/transport strip:** mute groups, solo, talkback where supported, monitor selection, undo/redo, and output status.
+- **Event/status area:** recent operations, warnings, engine state, and configuration version.
+
+The shell is consistent, while each workspace should look and behave like the professional instrument it represents. Use a restrained dark engineering theme, clear technical typography, tabular numeric values, and consistent units. Avoid generic admin dashboards, oversized KPI cards, decorative meters, excessive whitespace, and non-functional controls.
+
+---
+
+## 4. The thirteen workspaces
+
+Every workspace consumes shared graph, device, meter, event, and configuration services. It may propose or apply changes only within its permission scope.
+
+### 1. Live Sound Console
+
+The primary live mixing surface. Provide channel strips for named sources; gain where software-controlled, polarity, HPF, EQ, dynamics, pan, mute, solo, faders, pre/post sends, groups/DCA, bus assignments, and input/output metering. Include main L/R and available monitor/aux buses, plus selected-channel detail and routing context. Make the boundary between software controls and physical mixer controls explicit.
+
+### 2. Professional Audio DSP & EQ
+
+The shared software processing workspace. Show a selectable processing chain and a large EQ response/spectrum view. Include gain, polarity, HPF/LPF, parametric EQ, gate, compressor, limiter, delay, crossover components, processor bypass, input/output meters, A/B comparison, and parameter history. Spectrum at processor input/output must be distinguishable from measured room response.
+
+### 3. Intelligent Feedback Detection
+
+Observe selected live signal points and identify persistent narrowband peaks or feedback risk. Show spectrum, detected frequency and level, confidence/severity, event history, source/output context, and a proposed notch action. Distinguish **risk predicted**, **feedback detected**, and **suppression applied and verified**. Recommendations do not mute or change filters silently.
+
+### 4. Acoustic Intelligence & Room Analyzer
+
+Provide a measurement workspace for frequency response, RTA, impulse response, RT60/decay, waterfall, spectrogram, room modes, left/right comparison, and measurement history. Identify which input, microphone, test signal, and measurement method were used. Show measured results separately from inferred observations and recommendations. Room correction, phase alignment, and timing recommendations require suitable measurement inputs; ordinary program audio is not enough to claim a calibrated room result.
+
+### 5. Intelligent Speaker Management
+
+Represent speaker groups and available outputs. Configure supported output processing: crossover, filters, per-output EQ, gain, polarity, delay, limiter, and protection thresholds. Show routing from buses to physical outputs and speaker groups, plus live meters and warnings. Do not imply a logical bus corresponds to a physical connector until the device mapping is verified.
+
+### 6. Microphone Intelligence
+
+Maintain microphone inventory, type, physical connection, logical channel, assignment, and history. Monitor signal presence, measured level/noise/clipping, and available device telemetry such as phantom power, wireless battery, or RF state only when an integration supplies it. Offer supported input configuration controls and otherwise show a manual-action status.
+
+### 7. Instrument & Music Intelligence
+
+Manage instrument sources and provide source-appropriate monitoring: spectrum, fundamental/harmonic analysis, pitch where applicable, transient behavior, low-frequency monitoring, clipping/noise detection, channel activity, and EQ/dynamics recommendations. All recommendations must reference the measurement point and confidence.
+
+### 8. Livestream Studio
+
+Provide an independent broadcast mix and output path, separate from the room PA mix where routing permits. Include source contribution, stream/program bus, monitor bus, bus processing, loudness/LUFS, peak and true-peak where implemented, latency, output/device/connection state, recording state, and recording history. Only expose controls and destination state that the active output path supports.
+
+### 9. Automated Sound Check
+
+Guide an operator through pre-service checks: device availability, selected input/output format, source signal, routing, noise/clipping, available speaker outputs, feedback risk, DSP state, and recording/stream readiness. Show pass, warning, fail, pending, and not-testable states. Tests that emit tones or affect live outputs require clear scope, warnings, and operator authorization. Results must identify what was actually measured versus manually confirmed.
+
+### 10. Presets & Service Profiles
+
+Store named scenes such as Sunday service, rehearsal, prayer meeting, Bible study, conference, and special event. Scenes may include software routing, processor parameters, channel labels, supported device settings, and mappings. Support save, duplicate, compare, version history, restore, and apply preview. Before recall, show a diff, identify unsupported settings, validate, and require confirmation for consequential changes.
+
+### 11. AI Sound Engineer
+
+Present system summaries and explainable recommendations for gain staging, EQ, feedback risk, bass/low-frequency behavior, speaker setup, room observations, and service readiness. Allow operator questions grounded in current graph and measured data. Each recommendation includes evidence, affected graph nodes, confidence, expected change, potential impact, and **Review / Apply / Dismiss** actions. AI commands pass through the same permission, validation, confirmation, transaction, and audit path as manual commands.
+
+### 12. System Diagnostics & Reliability
+
+Show device connections, drivers, formats, sample rate, buffer, clock status, engine health, CPU/memory/DSP load, latency components, dropouts, underruns/overruns, signal faults, configuration state, and event history. Separate hardware-reported, software-measured, estimated, and unknown values. Provide recovery guidance and safe recovery actions. Avoid an opaque reliability score unless its inputs and calculation are visible.
+
+### 13. Virtual DI & Bass Processor
+
+Create one bass source workspace with two selectable physical topologies:
+
+- **Without physical DI:** bass to a suitable mixer input, then a dedicated mixer send/output or other isolated route to computer capture, then software bass processing.
+- **With physical DI:** bass to DI, balanced output to mixer mic input, then a suitable isolated mixer output to computer capture and software processing.
+
+Share the same software chain: input level/noise/clipping, HPF, EQ, spectrum, fundamental/harmonics, compressor, limiter, transient shaping, optional saturation, output gain, bypass, and A/B comparison. Label physical and software stages and make clear that software processing does not perform a physical DI's impedance conversion or balancing. Warn about duplicated dry/processed routing, polarity/phase issues, and feedback loops.
+
+---
+
+## 5. Unified Audio Engine architecture
+
+The product is separated into cooperating layers with clear ownership.
+
+### Layer A — User experience
+
+Desktop shell, workspaces, visualizations, interaction, and accessibility. It does not process audio.
+
+### Layer B — Control and intelligence
+
+Configuration transactions, graph commands, presets, event handling, analysis, AI, diagnostics, and permissions. It must not block or run synchronously inside the real-time audio callback.
+
+### Layer C — Real-time audio engine
+
+Device I/O, channel mapping, signal graph execution, DSP, mixing, routing, metering taps, and safe engine lifecycle. This is the sole software audio execution authority.
+
+### Layer D — Hardware abstraction and I/O adapters
+
+Device discovery, capability registry, OS/driver audio APIs, and optional hardware-specific control/monitoring adapters. Each adapter declares the capabilities it truly supports.
+
+### Layer E — Physical installation
+
+Microphones, instruments, analog and digital mixers, audio interfaces, DSP, amplifiers, speakers, and broadcast destinations.
+
+### Required engine services
+
+| Service | Responsibility |
+|---|---|
+| Device Manager | Discover devices, formats, connectivity, and changes |
+| Capability Registry | Record controllable, observable, manual, unsupported, and unknown features |
+| Input Registry | Map physical/device inputs to logical sources |
+| Signal Graph | Own graph topology, versions, validation, and trace queries |
+| Audio I/O | Start/stop capture and playback and manage device format |
+| DSP Processor | Execute shared software processors |
+| Channel Manager | Channel state, labels, gain, mute/solo, pan, and inserts |
+| Bus/Mix Manager | Summing, sends, bus state, and channel-to-bus mapping |
+| Output Manager | Map logical destinations to actual device outputs |
+| Metering Engine | Timestamped measurements at known graph points |
+| Analysis Engine | Spectrum and other non-blocking analysis services |
+| Event Engine | Structured event history and alerts |
+| Configuration Manager | Validate, transactionally apply, and roll back changes |
+| Scene Manager | Save, compare, version, and recall configuration profiles |
+
+### Research-based sound-engine decision
+
+The sound engine is the product's core, so the recommendation is a **purpose-built native C++ real-time engine with a compiled signal graph**, using mature platform and device APIs beneath it. Do not adopt a game-audio engine or a general-purpose DAW graph as the product's source of truth. The product needs a deterministic live mixer, high-channel-count routing, capability-aware hardware control, clock/latency accounting, safe scene changes, signal tracing, and recovery policies that are specific to this console.
+
+#### Engine and driver plan
+
+1. **Audio runtime:** a native C++ service owns device streams, the live render plan, channel processing, buses, output routing, metering taps, and engine state. Keep it isolated from the UI and AI so a UI hang or AI failure cannot block audio.
+2. **Windows pro I/O:** qualify vendor ASIO drivers for professional multichannel interfaces and network-audio endpoints where available. Offer Windows WASAPI `IAudioClient3` as a first-class compatibility backend, including low-period shared mode when the device supports it. Use exclusive mode only when a verified workflow requires it and the operator chooses it. Do not silently switch a running service to another driver or device.
+3. **Cross-platform growth:** keep device backends behind explicit adapters so Core Audio and Linux pro-audio backends can be added without changing the graph or DSP contracts. These are separate, qualified integrations, not assumed-equivalent drivers.
+4. **Network audio:** plan Dante, AES67, and Milan/AVB as distinct integrations. They bring their own channel limits, clock models, discovery, control, redundancy, and licensing/certification needs. Dante software/API distribution requires the applicable Audinate license; its redundant primary/secondary networks must remain physically and logically separated. Do not implement an unlicensed or generic Ethernet-audio path and call it Dante-compatible.
+5. **Processing graph:** own the product's active render plan. Validate and topologically compile graph edits off the audio thread, allocate all buffers in advance, then swap a complete immutable plan at a safe block boundary. Keep destruction/reclamation of old plans off the audio callback. Parameter commands use bounded queues and smoothing; overflow is reported rather than blocking audio.
+6. **Time-critical callback:** no allocation/free, file or database access, network calls, logging, AI, blocking mutex, graph compilation, device discovery, or UI dispatch in the callback. On Windows, register the servicing thread with the appropriate MMCSS audio class and use the device's supported period; thread priority does not replace headroom or testing.
+7. **Signal integrity:** track node and transport latency, calculate software branch alignment where possible, and mark external/unknown latency that cannot be compensated. Provide multi-point pre/post meters and preserve phase/polarity state. Use floating-point channel processing with high-precision bus accumulation and explicit overload handling.
+8. **Clocking:** prefer one qualified device for capture and playback in the first production profile. Professional network/clock-capable systems must expose leader/follower state, lock loss, drift, sample-rate conversion, and failover state. Never claim phase-coherent or sample-accurate routing across independent free-running clocks.
+
+#### Framework and library comparison
+
+| Option | What it provides | Fit for this console |
+|---|---|---|
+| **Custom C++ render engine + native/device adapters** | Control over render-plan compilation, update boundaries, metering points, clocks, latency, and recovery | **Recommended core.** More engineering work, offset by direct control over the features that distinguish a professional console. Reuse mature OS/vendor driver APIs; do not write hardware drivers from scratch. |
+| **JUCE 9** | Mature application/audio framework; [documented device support](https://docs.juce.com/master/juce__audio__devices_8h.html) includes Windows WASAPI and optional ASIO, plus other OS audio backends | Strong candidate for UI/utilities and possibly device abstraction after a prototype. Do not rely on [`AudioProcessorGraph`](https://github.com/juce-framework/JUCE/blob/master/modules/juce_audio_processors_headless/processors/juce_AudioProcessorGraph.cpp#L3587-L3594) as the sole live mixer: upstream source takes each processor's callback lock during processing, while graph updates/rebuilds are managed outside the audio thread. Also override device policy: [JUCE documents fallback](https://juce.com/tutorials/tutorial_audio_device_manager/) to the default device when a preferred device disappears, which is unsafe if done invisibly during a service. Confirm the [current license terms](https://juce.com/legal/juce-9-licence/) before distribution. |
+| **PortAudio / RtAudio** | Low-level callback-based I/O wrappers; see [PortAudio callback rules](https://files.portaudio.com/docs/v19-doxydocs/api_overview.html) and [RtAudio's Windows backends](https://github.com/thestk/rtaudio/blob/master/RtAudio.h). PortAudio's [ASIO backend is an optional build feature](https://github.com/PortAudio/portaudio/blob/master/CMakeLists.txt). | Useful for prototypes or a narrow I/O adapter. They do not provide this product's full routing, clock model, scene transaction, protection, or signal-trace engine, so they are not the engine by themselves. |
+| **WASAPI alone** | Windows-native shared/exclusive endpoint streams, device period/format negotiation, and device invalidation signaling ([Microsoft overview](https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi)) | Essential Windows backend, but not a portable engine or mixer. Microsoft's [low-latency guidance](https://learn.microsoft.com/en-us/windows-hardware/drivers/audio/low-latency-audio) supports low-period shared streams through `IAudioClient3`; [exclusive mode](https://learn.microsoft.com/en-us/windows/desktop/coreaudio/exclusive-mode-streams) should not be the default because it takes over the endpoint and can block other applications. |
+| **ASIO alone** | Low-latency host/driver interface commonly used by pro-audio hardware | Important Windows pro-I/O adapter, not a DSP engine. Behavior and channel support depend on the actual driver's quality and configuration. If distributing a closed-source host, use the [current Steinberg licensing route](https://forums.steinberg.net/t/asio-sdk-proprietary-licensing-faq/1044024) or a compatible licensed framework. |
+| **Dante / Milan / AES67** | Networked multichannel audio transport, clocking, discovery, and (depending on protocol/device) redundant links | Add as certified/licensed transport adapters on top of the engine. They are not substitutes for the local DSP/render engine. See [Audinate licensing](https://www.audinate.com/legal/software-licensing/), [Dante clocking](https://dev.audinate.com/GA/dante-controller/userguide/webhelp/content/clock_synchronization.htm), [Dante redundancy](https://dev.audinate.com/GA/dante-controller/userguide/webhelp/content/routing_media.htm), and the [Milan specification overview](https://avnu.org/resource/milan-specification/). |
+
+JUCE's documented breadth makes it a reasonable framework candidate, but it is not a guarantee of dropout-free operation. Microsoft's [MMCSS guidance](https://learn.microsoft.com/en-us/windows/win32/procthread/multimedia-class-scheduler-service) explains how to prioritize time-sensitive audio threads; it does not guarantee that a loaded machine will meet every deadline. The product's own graph transaction, no-silent-fallback, clocking, and live-safety policies remain mandatory. The final backend choice should pass a small device-host prototype and the qualification matrix below before it is frozen.
+
+#### Pro-console scale and qualification
+
+Professional consoles provide the relevant scale benchmark: Allen & Heath documents dLive as a 96 kHz system with up to 128 fully processed input channels, 64 mix outputs, a configurable 64-bus architecture, sub-millisecond internal engine latency, and optional redundant power. Yamaha DM7 specifications list 120 mono input channels, 48 mix buses, 144×144 Dante I/O, and dual internal power supplies. These are **reference points for capacity, routing, clocking, latency accounting, and redundancy—not promises that a general-purpose PC will reproduce their FPGA/DSP latency or hardware reliability**. See [dLive MixRack specifications](https://www.allen-heath.com/hardware/dlive-series/dlive-mixracks/) and [DM7 specifications](https://usa.yamaha.com/business/audio/products/mixers/dm7/specs.html).
+
+Design the logical graph for at least **128 processing inputs, 64 mix outputs, and 64 configurable buses**. Treat 48 kHz as the baseline live profile and 96 kHz as a professional profile when all selected hardware and network endpoints support it. Prove the channel/bus count at each rate on named CPU, driver, interface, and network profiles. Do not claim dLive-class sub-millisecond end-to-end latency: measure software graph cost and input-to-output round-trip latency separately, including hardware and transport buffers.
+
+#### Reliability is a system property
+
+No software on a general-purpose computer can honestly promise that it will never fail. Engineer for fault containment and tested recovery:
+
+- **Single-host release:** maintain an explicit physical/hardware bypass or independent dry route for the critical PA path where the installation allows it. A computer or driver failure must not trap the venue behind a software-only signal path without a documented fallback.
+- **No silent failover:** device loss, clock loss, network loss, overload, or driver reset creates an event and a clear degraded state. Keep the last valid graph; do not switch to a random default output or re-arm a changed PA path without authorization.
+- **Redundancy tier:** plan a future primary/standby engine pair, matched hardware paths, synchronized clocks, configuration mirroring, watchdogs, and an external failover mechanism. A second process on the same PC is not hardware redundancy.
+- **Qualification:** every supported engine profile must pass repeatable channel-count, sample-rate, buffer, latency, CPU-headroom, long-duration soak, device-disconnect/reconnect, clock/network fault, UI/AI failure, scene-change, and recovery tests. Zero xruns during a defined 24-hour soak is a minimum release gate for a production profile, not proof of universal reliability. Keep raw logs and record the exact hardware, firmware, driver, and OS build.
+- **Safety envelope:** isolate service profiles and output protection limits; ramp or mute safely on unrecoverable stream loss; require an operator to re-enable output after a fault when a sudden restart could produce an unsafe level.
+
+This is the basis for a professional console. The reference MG16XU/Xonar setup is useful for basic compatibility testing only; it cannot validate high-channel-count, network-clocked, or redundant-console behavior.
+
+The core engine decision is native C++; the desktop shell/framework and exact device adapters remain subject to the professional-interface prototype and target-platform confirmation. The initial Windows profile should qualify ASIO and WASAPI; other OS backends follow the same engine contracts. Keep runtime isolated from UI and AI work. Control commands cross a bounded, explicit IPC/API boundary; meters and events flow asynchronously to the UI.
+
+---
+
+## 6. Signal graph and signal truth
+
+The graph represents both audio topology and related observation/control relationships, but these relationship types must remain visibly distinct.
+
+### Core entities
+
+| Entity | Meaning |
+|---|---|
+| Device | Physical or virtual audio device |
+| Port | Input/output endpoint with channel layout and format |
+| Source | Logical microphone, instrument, playback, or other origin |
+| Channel | Logical mixing/processing channel |
+| Node | Capture, processor, splitter, mixer, bus, or destination stage |
+| Edge | Typed connection between node ports |
+| Bus | Logical summing/distribution destination |
+| Output | Device output, speaker group, stream, or recording target |
+| Meter | Measurement point tied to a node and port |
+| Event | State change, signal fault, routing change, or operation |
+| Scene | Saved configuration and device mapping |
+
+Every entity has a stable unique ID. Every node declares its kind, execution domain (`hardware`, `software`, or `monitoring`), capability, ports, active/bypass/status state, and measurement references. Every edge declares source/destination ports, connection kind (`analog`, `digital`, `software`, `monitoring`, or `control`), channel mapping, active status, and known latency.
+
+### Graph behavior
+
+- Support fan-out, summing, independent output branches, parallel processing, mute/solo, bypass, reconnects, and graph versioning.
+- Validate channel count, format, sample rate, device capability, destination availability, cycles, and incompatible processing before apply.
+- Reject unintended loops. Allow only explicitly engineered feedback paths with safe delay/limits.
+- A logical route is not proof of a physical cable. Represent known physical wiring, software routing, and manually declared topology with separate evidence/status labels.
+- Commit graph transactions atomically at safe audio boundaries; on failure preserve the last active graph and explain the failed stage.
+- Store the graph version with measurements, traces, events, and scene operations so stale UI state can be detected.
+
+### Measurement model
+
+Each measurement is linked to `nodeId`, `portId`, timestamp/sequence, graph version, channel layout, and source class:
+
+- `hardware_reported`
+- `software_measured`
+- `software_estimated`
+
+Useful initial values include peak dBFS, RMS dBFS, peak hold, clipping, signal presence, mute state, sample rate, and channel count. Confidence is optional and must not be fabricated for direct measurements.
+
+### Universal Signal Journey
+
+Signal Journey is global and works in both directions:
+
+- **Forward:** source to every bus and destination.
+- **Reverse:** destination to every contributing source.
+- Selecting an intermediate processor shows upstream and downstream stages.
+- Expand branches and inspect signal state/measurements where available.
+- Identify muted, disconnected, inactive, bypassed, overloaded, unknown, or manually configured stages.
+- Open a stage's workspace without losing the trace context.
+
+Trace results include graph version, ordered stages, branches, status, measurements, warnings, and generation time.
+
+---
+
+## 7. Hardware integration and qualification profiles
+
+### Universal hardware strategy
+
+Use a hardware abstraction layer with device adapters and capability profiles. Separate the universal application, integrations, and installation-specific profiles. Target Windows audio APIs first for the initial setup; keep other OS/backend integrations as later adapters rather than assuming identical capability across APIs.
+
+Classify every capability as:
+
+1. **Controllable:** a supported API can change it.
+2. **Observable:** a supported API can report it.
+3. **Manually configured:** it can be represented, but the operator sets or confirms the physical state.
+4. **Unsupported/unknown:** unavailable or not yet verified.
+
+Profiles must include device IDs, driver/backend, input/output counts and names, formats, sample rates, buffer support, clock/synchronization support, hardware metering, remote control, DSP, and connection/status evidence. Partial and unknown capabilities must be represented explicitly.
+
+### Basic compatibility fixture: MG16XU and Xonar DGX
+
+Yamaha specifies the MG16XU USB interface as **2-in/2-out**, so the application must not create sixteen independent computer capture channels from the mixer’s sixteen analog input channels. Independent computer processing of a source such as bass requires an isolated physical send/output or an interface that exposes that source separately. The MG16XU also has physical output options that can be assessed for that purpose; the actual cable and bus assignment must be recorded in the installation profile. See [Yamaha MG16XU product specifications](https://usa.yamaha.com/business/audio/products/mixers/mg/specs.html) and the [Yamaha MG-series overview](https://usa.yamaha.com/products/contents/proaudio/musicianspa/products_analog_mixer.html).
+
+ASUS documents the Xonar DGX line input as an analog recording input. Treat its exact driver formats, channel count, available capture APIs, simultaneous operation with the MG16XU, and playback path as items to discover and verify on the target computer, not as assumptions. See the [ASUS Xonar DGX user manual](https://dlcdnets.asus.com/pub/ASUS/Audio_Card/Xonar_DGX/E11106_Xonar_DGX_UM_V5_web.pdf).
+
+This is one **basic compatibility fixture only**. A professional release needs separate qualification profiles for representative multichannel pro interfaces and, before claiming networked-audio support, actual Dante/AES67/Milan-capable endpoints and their clock/network behavior.
+
+The basic fixture can support these alternatives:
+
+- **Preferred simple path:** MG16XU USB capture/playback using only the channels and formats reported by the device/driver.
+- **Alternative capture path:** a suitable MG16XU analog output into the Xonar DGX line input, if tested and configured.
+
+Do not combine two devices carrying the same source unless intentional. Separate device clocks may drift; measure latency and drift, and avoid claiming synchronization from resampling alone. Prefer one stable device for the initial capture/playback path when practical.
+
+---
+
+## 8. DSP, EQ, crossover, and mixing requirements
+
+### Initial real-time processors
+
+Implement in a controlled sequence: gain, polarity, HPF/LPF, parametric EQ, compressor, gate, limiter, delay, peak/RMS meters, spectrum analysis, and crossover. Add saturation and advanced transient shaping later.
+
+Each processor declares channel layout, parameters, latency, enabled/bypass state, reset behavior, and safe parameter update method. At least two channels are independently processable from the start; stereo link is optional and never removes dual-mono capability.
+
+### Professional EQ requirements
+
+- Configurable multi-band parametric EQ with bell, shelving, HPF, LPF, notch, and band-pass filters.
+- Frequency, gain, Q, filter slope where supported, per-band enable/bypass, and numerical entry.
+- Large combined frequency-response graph and real-time input/output spectrum.
+- Draggable control points, peak hold/averaging, A/B comparison, bypass, presets, undo/redo, and parameter history.
+- 31-band graphic EQ is a design target for the graphic-EQ option, not a substitute for parametric EQ.
+- Clearly distinguish the processor's calculated response from measured acoustic response.
+
+### Professional crossover requirements
+
+- Full-range, two-way, three-way, four-way, sub/main, front-fill, delay-speaker, and custom multi-output profiles.
+- Linkwitz-Riley, Butterworth, and Bessel families where implemented; selectable supported slopes and independent crossover points.
+- Per-output gain, polarity, delay (samples/ms/distance), limiter, metering, and phase/magnitude visualization.
+- Asymmetric designs and speaker profiles may be added as capabilities mature.
+- Configuration warnings for gain, clipping, invalid routing, and unsafe/missing protection data.
+- Recommendations based on verified speaker/amp specifications and suitable measurements only.
+
+### Mixing and buses
+
+Support configurable logical buses for Main L/R, monitors, subwoofer, livestream, recording, effects sends/returns, and additional groups. The bus count is not fixed. Logical buses map to physical outputs only after available device channels and the installation topology are verified.
+
+Each branch can have independent levels, processing, mute/solo, and destination routing where the graph and hardware allow it. Prevent unintended parallel dry/processed feeds and duplicated return paths.
+
+### Real-time safety constraints
+
+- No memory allocation, blocking lock, database access, network call, UI work, or AI inference in the real-time callback.
+- No invalid processor state is activated.
+- Transfer parameter changes safely to the audio thread; smooth sensitive changes to avoid clicks where appropriate.
+- Preserve buffer ownership, channel layout, and sample format explicitly.
+- Audio engine lifecycle and device failure handling must leave the system in a known safe state.
+
+---
+
+## 9. Intelligence, automation, and operator safety
+
+Analysis services observe shared metering taps and graph state; they do not create parallel audio paths. AI consumes measured/contextual data, explains findings, and emits proposals. Only authorized engine commands change active state.
+
+### Recommendation lifecycle
+
+`observe → analyze → explain → propose → operator review/approval → validate → apply transaction → verify → audit`
+
+Recommendations must show affected nodes, evidence, confidence, expected parameter change, likely benefit, risk, and whether the result can be measured after application. Dismissed or failed recommendations must not disappear from relevant history.
+
+### High-impact operations
+
+Explicit review and confirmation are required for routing changes, scene recall, speaker-protection changes, feedback suppression, test tones to live outputs, and changes that can materially affect gain or monitoring. Always provide a safe cancel path and preserve the prior valid configuration.
+
+---
+
+## 10. API and event contracts
+
+Define stable engine contracts before module-specific implementation. The concrete transport can be local IPC, an in-process boundary, or a local service after the target runtime is chosen.
+
+### Minimum command/query surface
+
+- Discover devices and read capability profiles.
+- Read engine state and start/stop safely.
+- Read graph and graph version.
+- Validate proposed graph/DSP transactions.
+- Apply a validated transaction and retrieve its execution result.
+- Query forward/reverse signal traces.
+- Read meters as snapshots and subscribe to meter streams.
+- Read buses, outputs, scenes, and structured events.
+- Save/compare/apply scenes through the configuration transaction path.
+
+Continuous meters and events should use streaming delivery (for example, WebSocket or local IPC stream), not high-frequency polling. The proposed REST paths in the source notes are examples, not a required public API.
+
+### Structured events
+
+Include unique event ID, timestamp, event type, severity, source/node/route IDs, graph version, originating service, previous/current state where applicable, and action/recommendation. Event families include device connection, source signal, graph validation/commit, processor changes, mute/clipping, bus/output activity, feedback, sound check, scene operations, and recovery.
+
+---
+
+## 11. Suggested project boundaries
+
+The workspace currently has no existing project files, so these are logical boundaries, not a committed language, framework, package manager, or repository layout.
+
+```text
+apps/
+  desktop-ui/
+engine/
+  audio-core/
+  device-manager/
+  hardware-abstraction/
+  signal-graph/
+  dsp/
+  mixer-and-buses/
+  metering-and-events/
+integrations/
+  windows-audio/
+  hardware-adapters/
+contracts/
+  devices/
+  signal-graph/
+  dsp/
+  events/
+modules/
+  live-console/ eq/ feedback/ acoustics/ speakers/
+  microphones/ instruments/ livestream/ soundcheck/
+  presets/ ai-engineer/ diagnostics/ virtual-di/
+profiles/
+  reference-systems/ simulated-systems/
+docs/
+  architecture/ hardware/ dsp/ implementation/
+```
+
+The runtime boundary should keep time-critical audio work isolated from UI and intelligence services. Persisted configurations, installation profiles, runtime device discovery, and active graph execution state are related but distinct records.
+
+---
+
+## 12. Implementation roadmap and release gates
+
+Build the shared engine foundation before advanced intelligence. Each phase ends with evidence that its exit criteria work on the reference system and a simulated profile. This blueprint defines acceptance criteria; no implementation or test execution is claimed here.
+
+| Phase | Deliverable | Exit criteria |
+|---|---|---|
+| **0. Architecture and capability inventory** | Confirm target OS/runtime, professional I/O/networking roadmap, driver APIs, clocks, safety path, capacity target, graph contracts, permissions, and lab profiles | Verified capability inventory; selected multichannel pro interface for qualification; documented topology; agreed engine/UI boundary |
+| **1. Device I/O and engine lifecycle** | Device discovery, pro-driver host, format negotiation, capture/playback, start/stop, disconnect/reconnect, diagnostics | Correct devices/formats reported; safe start/stop and recovery; stable multichannel signal on the qualified pro interface |
+| **2. Signal Graph and transactions** | Typed nodes/edges, channel maps, validation, versioning, apply/rollback | Reject invalid channel maps/cycles; active graph matches engine execution |
+| **3. Metering and Signal Journey** | Measurement taps, event stream, forward/reverse trace, global search | Measurements identify point/source/version; branching routes trace correctly; stale traces detected |
+| **4. Core mixing and DSP** | Channels, buses, faders, sends, EQ, dynamics, delay, meters | Audio persists through UI navigation; real-time constraints hold; controls affect actual software engine state |
+| **5. Virtual DI and instrument workflows** | Isolated-source routing, bass chain, source intelligence | Dry/processed route is explicit; no unintended duplicate feed; source-specific measurements verified |
+| **6. Output, crossover, and speaker management** | Output mapping, speaker groups, crossover, delay, polarity, limiter | Only supported outputs exposed; verified routing and safe protection configuration |
+| **7. Livestream and recording** | Independent broadcast/record buses, processing, monitoring, status | Broadcast path remains distinct where configured; correct meters and destinations shown |
+| **8. Feedback and room intelligence** | Feedback analysis, measurement sessions, acoustic tools | Findings show evidence and measurement limits; no silent live corrections |
+| **9. AI Sound Engineer** | Grounded analysis, explainable proposals, approval and audit | AI cannot bypass validation/permissions; AI unavailability does not interrupt audio |
+| **10. Sound check, presets, diagnostics** | Guided checks, scene versioning/diff/apply, recovery | Check results distinguish measured/manual/not-testable; scene apply validates/rolls back |
+| **11. Compatibility expansion and production hardening** | More adapters/profiles, stress/recovery review, documented bypass/failover path, usability polish | Release gates met for each supported device profile; failover tested where claimed; unsupported capabilities remain explicit |
+
+The first implementation milestone is **Phase 0 followed by Phase 1**. Design/UI mockups may proceed in parallel only when they label illustrative values and do not imply unsupported controls.
+
+---
+
+## 13. Acceptance and quality criteria
+
+The platform is not complete merely because audio reaches an output. The following evidence is required before a production release:
+
+### Audio and graph correctness
+
+- Device loss/reconnect and unsupported format paths are handled safely.
+- One input can branch to multiple outputs and one output can be traced to all contributors.
+- Disconnected, muted, bypassed, inactive, and unknown states are accurately shown.
+- Invalid channel mappings and unintended routing cycles are rejected.
+- A failed graph/DSP change leaves the previous valid configuration active.
+- UI navigation and AI/service outages do not interrupt the real-time engine.
+- The declared 128-input/64-output/64-bus profile passes sustained-load tests at every sample rate it claims to support.
+- A device/network clock fault is detected and shown; any bypass or standby path behaves as documented.
+
+### Measurement correctness
+
+- Each meter identifies graph point, channel layout, timestamp, graph version, and measurement source.
+- Captured stereo does not imply unavailable per-channel hardware measurements.
+- Measured latency, configured buffer latency, and unknown hardware latency are separate values.
+- Round-trip latency is established by loopback measurement rather than inferred from buffer size alone.
+
+### Processing and usability
+
+- Bypass is a real DSP bypass; faders/knobs/switches reflect engine state.
+- EQ and crossover graphs reflect their actual configured parameters.
+- Live changes are validated, auditable, and reversible where appropriate.
+- Sound-check tone/output actions clearly identify affected outputs and require authorization.
+- Preset application previews its changes and reports unsupported parameters.
+
+### Initial performance targets
+
+Treat these as starting targets to measure on the actual hardware, not guarantees: stable real-time processing with no dropouts during defined stress runs; normal UI actions under 100 ms; typical signal trace under 250 ms; meter updates around 20–30 Hz; AI failure with no audio interruption; and recovery to the last known valid configuration where safe.
+
+For every production profile, add a minimum 24-hour continuous-load soak with zero xruns, CPU headroom under worst-case DSP/routing load, and fault-injection runs for stream loss, driver reset, clock loss, network interruption (when applicable), and app/UI/AI failure. An isolated passing profile is evidence for that exact OS, driver, firmware, interface, sample rate, and graph size only.
+
+---
+
+## 14. Decisions consolidated from the supplied notes
+
+1. The product is universal-first; MG16XU/Xonar DGX are a reference profile.
+2. One Unified Audio Engine executes audio, and one shared Signal Graph describes routes.
+3. The three global system screens sit above the thirteen specialist workspaces.
+4. Thirteen workspaces are grouped into six main navigation destinations.
+5. The interface is a professional virtual console, not a generic admin dashboard.
+6. Hardware, software, monitoring, estimates, and AI recommendations are visibly distinct.
+7. Signal Journey is global, bidirectional, branch-aware, and generated from the active graph.
+8. AI observes and recommends; the engine validates and applies only authorized commands.
+9. Independent channel processing and scalable channel counts are architectural requirements.
+10. The audio engine remains operational without UI, database, network, or AI availability.
+11. Physical and virtual DI pathways share a software bass workspace but retain their electrical distinction.
+12. EQ, crossover, speaker processing, and independent broadcast mixes are core platform capabilities.
+
+---
+
+## 15. Open implementation inputs
+
+The product architecture is defined here. Before selecting concrete packages and starting implementation, confirm the target operating system and desktop framework, the repository to extend (if one exists), the actual device drivers and wiring, and which first user workflow should be delivered end to end. These choices affect integration details but do not change the master architecture above.
+

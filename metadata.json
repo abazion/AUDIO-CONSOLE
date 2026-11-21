@@ -1,0 +1,6 @@
+{
+  "name": "Church Intelligence Audio Console",
+  "description": "Professional hardware-aware digital mixing console, DSP processor, acoustic analyzer, and intelligent sound management desk.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
